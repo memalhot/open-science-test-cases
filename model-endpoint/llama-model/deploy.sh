@@ -2,13 +2,13 @@
 set -e
 
 # Model Endpoint Deployment Script for OpenShift
-# This script deploys a model serving endpoint using oc and YAML manifests
+# This script deploys a model serving endpoint using oc and Kustomize
 
 NAMESPACE="${NAMESPACE:-model-serving}"
 MODEL_NAME="${MODEL_NAME:-llm-model}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "=== Deploying Model Endpoint ==="
+echo "=== Deploying Model Endpoint with Kustomize ==="
 echo "Namespace: $NAMESPACE"
 echo "Model Name: $MODEL_NAME"
 echo ""
@@ -25,31 +25,24 @@ fi
 # Switch to the namespace
 oc project "$NAMESPACE"
 
-# Apply ConfigMap for model configuration
-echo ""
-echo "Applying ConfigMap..."
-oc apply -f "$SCRIPT_DIR/configmap.yaml"
-
-# Apply Secret for API keys (if exists)
-if [ -f "$SCRIPT_DIR/secret.yaml" ]; then
-    echo "Applying Secret..."
-    oc apply -f "$SCRIPT_DIR/secret.yaml"
+# Check if secret.yaml exists in base directory
+if [ ! -f "$SCRIPT_DIR/base/secret.yaml" ]; then
+    echo "Warning: base/secret.yaml not found."
+    echo "Creating it from base/secret.yaml.example..."
+    if [ -f "$SCRIPT_DIR/base/secret.yaml.example" ]; then
+        cp "$SCRIPT_DIR/base/secret.yaml.example" "$SCRIPT_DIR/base/secret.yaml"
+        echo "Please edit base/secret.yaml with your actual credentials before deploying!"
+        exit 1
+    else
+        echo "Error: base/secret.yaml.example not found!"
+        exit 1
+    fi
 fi
 
-# Apply Deployment
+# Apply all resources using Kustomize
 echo ""
-echo "Applying Deployment..."
-oc apply -f "$SCRIPT_DIR/deployment.yaml"
-
-# Apply Service
-echo ""
-echo "Applying Service..."
-oc apply -f "$SCRIPT_DIR/service.yaml"
-
-# Apply Route for external access
-echo ""
-echo "Applying Route..."
-oc apply -f "$SCRIPT_DIR/route.yaml"
+echo "Applying all resources with Kustomize..."
+oc apply -k "$SCRIPT_DIR"
 
 # Wait for deployment to be ready
 echo ""
@@ -64,3 +57,8 @@ echo "Model endpoint is available at: https://$ROUTE_URL"
 echo ""
 echo "Test the endpoint with:"
 echo "curl -X POST https://$ROUTE_URL/v1/predict -H 'Content-Type: application/json' -d '{\"text\": \"test input\"}'"
+echo ""
+echo "To delete all resources, run:"
+echo "  ./cleanup.sh"
+echo "Or manually:"
+echo "  oc delete -k $SCRIPT_DIR"
