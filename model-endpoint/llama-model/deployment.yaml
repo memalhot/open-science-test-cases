@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-model
+  namespace: model-serving
+  labels:
+    app: llm-model
+    component: model-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: llm-model
+  template:
+    metadata:
+      labels:
+        app: llm-model
+        component: model-server
+    spec:
+      containers:
+      - name: model-server
+        # Example: using a model serving framework like vLLM, TGI, or custom server
+        image: quay.io/opendatahub/vllm:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        env:
+        - name: MODEL_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: model-config
+              key: model.name
+        - name: MAX_BATCH_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: model-config
+              key: max.batch.size
+        - name: PORT
+          value: "8000"
+        # Uncomment to use secrets for API keys
+        # - name: API_KEY
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: model-secrets
+        #       key: api.key
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "2000m"
+          limits:
+            memory: "8Gi"
+            cpu: "4000m"
+            # Uncomment if using GPUs
+            # nvidia.com/gpu: "1"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: model-cache
+          mountPath: /models
+      volumes:
+      - name: model-cache
+        emptyDir:
+          sizeLimit: 20Gi
+      # Uncomment if using GPU nodes
+      # nodeSelector:
+      #   nvidia.com/gpu.present: "true"
+      # tolerations:
+      # - key: nvidia.com/gpu
+      #   operator: Exists
+      #   effect: NoSchedule
