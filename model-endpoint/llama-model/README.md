@@ -22,6 +22,11 @@ This directory contains scripts and YAML manifests to deploy a model serving end
    NAMESPACE=my-namespace MODEL_NAME=my-model ./deploy.sh
    ```
 
+3. **Undeploy the model endpoint**
+   ```bash
+   chmod +x cleanup.sh
+   ./cleanup.sh
+   ```
 ## Configuration
 
 ### Environment Variables
@@ -60,54 +65,6 @@ Edit `deployment.yaml` to customize:
 - Volume mounts
 - Node selectors for GPU nodes
 
-## Manual Deployment Steps
-
-If you prefer to deploy manually:
-
-```bash
-# Create namespace
-oc create namespace model-serving
-oc project model-serving
-
-# Apply manifests
-oc apply -f configmap.yaml
-oc apply -f secret.yaml  # if using secrets
-oc apply -f deployment.yaml
-oc apply -f service.yaml
-oc apply -f route.yaml
-
-# Check deployment status
-oc rollout status deployment/llm-model
-oc get pods
-oc get route
-```
-
-## Testing the Endpoint
-
-Once deployed, get the route URL:
-```bash
-oc get route llm-model -o jsonpath='{.spec.host}'
-```
-
-Test the endpoint:
-```bash
-curl -X POST https://$(oc get route llm-model -o jsonpath='{.spec.host}')/v1/predict \
-  -H 'Content-Type: application/json' \
-  -d '{"text": "What is machine learning?"}'
-```
-
-## Cleanup
-
-To remove the deployment:
-```bash
-oc delete -f route.yaml
-oc delete -f service.yaml
-oc delete -f deployment.yaml
-oc delete -f configmap.yaml
-oc delete -f secret.yaml  # if created
-
-# Optionally delete the namespace
-oc delete namespace model-serving
 ```
 
 ## Troubleshooting
