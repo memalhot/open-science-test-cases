@@ -1,1 +1,3 @@
 secret.yaml
+credentials.env
+*.credentials
