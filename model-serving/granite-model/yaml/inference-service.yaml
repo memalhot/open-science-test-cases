@@ -1,0 +1,46 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: granite-inference-service
+parameters:
+  - name: MODEL_NAME
+    description: Name for the deployed model
+    value: granite-model
+  - name: MODEL_PATH
+    description: Path to model within the S3 bucket
+    value: models/granite-3.0-8b-instruct
+  - name: SERVING_RUNTIME
+    description: Name of the vLLM ServingRuntime
+    required: true
+objects:
+  - apiVersion: serving.kserve.io/v1beta1
+    kind: InferenceService
+    metadata:
+      name: ${MODEL_NAME}
+      annotations:
+        openshift.io/display-name: ${MODEL_NAME}
+        serving.knative.openshift.io/enablePassthrough: "true"
+        sidecar.istio.io/inject: "true"
+        serving.kserve.io/deploymentMode: RawDeployment
+      labels:
+        opendatahub.io/dashboard: "true"
+    spec:
+      predictor:
+        maxReplicas: 1
+        minReplicas: 1
+        model:
+          modelFormat:
+            name: vLLM
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+          runtime: ${SERVING_RUNTIME}
+          storage:
+            key: minio-data-connection
+            path: ${MODEL_PATH}
+        tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Exists
