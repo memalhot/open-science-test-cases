@@ -3,15 +3,18 @@ set -euo pipefail
 
 PROJECT=mm-test
 
-oc project "${PROJECT}"
-# oc apply -f minio.yaml --as system:admin
-# sleep 3
-
 if [[ ! -f credentials.env ]]; then
   echo "Error: credentials.env not found" >&2
   exit 1
 fi
 source credentials.env
+
+oc project "${PROJECT}"
+oc process -f minio.yaml \
+  -p MINIO_ROOT_USER="${MINIO_ROOT_USER}" \
+  -p MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD}" \
+  | oc apply --as system:admin -f -
+oc wait --for=condition=available deployment/minio --timeout=120s
 
 S3_ENDPOINT=$(oc get route minio-api -o jsonpath='https://{.spec.host}')
 if [[ -z "${S3_ENDPOINT}" ]]; then
