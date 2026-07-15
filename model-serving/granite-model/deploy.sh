@@ -10,7 +10,7 @@ fi
 source credentials.env
 
 oc project "${PROJECT}"
-oc process -f minio.yaml \
+oc process -f yaml/minio.yaml \
   -p MINIO_ROOT_USER="${MINIO_ROOT_USER}" \
   -p MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD}" \
   | oc apply --as system:admin -f -
@@ -26,14 +26,14 @@ export S3_ENDPOINT
 git clone "https://memalhot:${ACCESS_TOKEN}@huggingface.co/ibm-granite/granite-3.0-8b-instruct"
 sleep 3
 
-python create-bucket.py
+python python/create-bucket.py
 sleep 3
 
-python model-to-s3.py
+python python/model-to-s3.py
 
 # Step 4.1: Create S3 data connection
 echo "Creating S3 data connection..."
-oc process -f data-connection.yaml \
+oc process -f yaml/data-connection.yaml \
   -p MINIO_ROOT_USER="${MINIO_ROOT_USER}" \
   -p MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD}" \
   -p S3_ENDPOINT="${S3_ENDPOINT}" \
@@ -53,7 +53,7 @@ fi
 echo "Using serving runtime: ${SERVING_RUNTIME}"
 
 echo "Deploying model..."
-oc process -f inference-service.yaml \
+oc process -f yaml/inference-service.yaml \
   -p SERVING_RUNTIME="${SERVING_RUNTIME}" \
   | oc apply --as system:admin -f -
 
