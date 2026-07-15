@@ -3,6 +3,8 @@
 PROJECT=mm-test
 
 oc project "${PROJECT}"
+python delete-bucket.py
+
 oc process -f minio.yaml \
   -p MINIO_ROOT_USER=placeholder \
   -p MINIO_ROOT_PASSWORD=placeholder \
