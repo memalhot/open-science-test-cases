@@ -34,6 +34,7 @@ ACCESS_TOKEN=<your-hf-token>
 ### 2. Run the deploy script
 
 ```bash
+chmod +x serve.sh
 ./serve.sh
 ```
 

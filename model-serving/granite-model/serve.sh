@@ -1,10 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-MY_WORKBENCH=mm-test
+PROJECT=mm-test
 
-oc project "${MY_WORKBENCH}"
-oc apply -f minio.yaml --as system:admin
+oc project "${PROJECT}"
+# oc apply -f minio.yaml --as system:admin
+# sleep 3
 
 if [[ ! -f credentials.env ]]; then
   echo "Error: credentials.env not found" >&2
@@ -20,5 +21,9 @@ fi
 export S3_ENDPOINT
 
 git clone "https://memalhot:${ACCESS_TOKEN}@huggingface.co/ibm-granite/granite-3.0-8b-instruct"
+sleep 3
+
 python create-bucket.py
+sleep 3
+
 python model-to-s3.py
