@@ -5,13 +5,12 @@ metadata:
   labels:
     opendatahub.io/dashboard: "true"
   annotations:
-    openshift.io/display-name: vLLM Runtime
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime for KServe
 spec:
-  builtInAdapter:
-    modelLoadingTimeoutMillis: 90000
   containers:
     - name: kserve-container
-      image: quay.io/modh/vllm:rhoai-2.17-cuda
+      image: quay.io/modh/vllm@sha256:4f550996130e7d16cacb24ca9a2865e7cf51eddaab014ceaf31a1ea6ef86d4ec
       command:
         - python
         - -m
@@ -23,11 +22,10 @@ spec:
         - --dtype=float16
         - --max-model-len=4096
       env:
-        - name: HF_HUB_OFFLINE
-          value: "1"
+        - name: HF_HOME
+          value: /tmp/hf_home
       ports:
         - containerPort: 8080
-          name: http1
           protocol: TCP
       resources:
         limits:

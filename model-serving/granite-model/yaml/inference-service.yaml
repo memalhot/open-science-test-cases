@@ -21,6 +21,7 @@ objects:
         openshift.io/display-name: ${MODEL_NAME}
         serving.knative.openshift.io/enablePassthrough: "true"
         sidecar.istio.io/inject: "true"
+        sidecar.istio.io/rewriteAppHTTPProbers: "true"
         serving.kserve.io/deploymentMode: RawDeployment
       labels:
         opendatahub.io/dashboard: "true"
@@ -32,9 +33,13 @@ objects:
           modelFormat:
             name: vLLM
           resources:
-            limits:
-              nvidia.com/gpu: "1"
             requests:
+              cpu: "2"
+              memory: 12Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4"
+              memory: 24Gi
               nvidia.com/gpu: "1"
           runtime: ${SERVING_RUNTIME}
           storage:
