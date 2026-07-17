@@ -45,11 +45,10 @@ MODEL_NAME=granite-model
 echo "Enabling single-model serving..."
 oc label namespace "${PROJECT}" modelmesh-enabled=false --overwrite --as system:admin
 
-SERVING_RUNTIME=$(oc get servingruntime -o name 2>/dev/null | grep -i vllm | head -1 | cut -d/ -f2)
-if [[ -z "${SERVING_RUNTIME}" ]]; then
-  echo "Error: no vLLM ServingRuntime found" >&2
-  exit 1
-fi
+echo "Creating vLLM ServingRuntime..."
+oc apply -f yaml/serving-runtime.yaml --as system:admin
+
+SERVING_RUNTIME=vllm-runtime
 echo "Using serving runtime: ${SERVING_RUNTIME}"
 
 echo "Deploying model..."
@@ -57,16 +56,52 @@ oc process -f yaml/inference-service.yaml \
   -p SERVING_RUNTIME="${SERVING_RUNTIME}" \
   | oc apply --as system:admin -f -
 
-# Step 4.3: Wait for deployment and apply scale workaround
-echo "Waiting for deployment to start..."
-sleep 60
+# Wait for deployment and apply scale workaround
+# Large models can trigger an RHOAI bug where the deployment scales to 0
+# before the model finishes loading. Poll and re-scale until it's available.
+echo "Waiting for deployment to appear..."
+MAX_ATTEMPTS=30
+POLL_INTERVAL=10
 
-DEPLOYMENT_NAME=$(oc get deployment -l serving.kserve.io/inferenceservice="${MODEL_NAME}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-if [[ -n "${DEPLOYMENT_NAME}" ]]; then
-  echo "Scaling ${DEPLOYMENT_NAME} to 1 replica..."
-  oc scale deployment/"${DEPLOYMENT_NAME}" --replicas=1 --as system:admin
-else
-  echo "Warning: could not find deployment for ${MODEL_NAME}, you may need to scale manually"
+DEPLOYMENT_NAME=""
+for (( i=1; i<=MAX_ATTEMPTS; i++ )); do
+  DEPLOYMENT_NAME=$(oc get deployment -l serving.kserve.io/inferenceservice="${MODEL_NAME}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+  if [[ -n "${DEPLOYMENT_NAME}" ]]; then
+    echo "Found deployment: ${DEPLOYMENT_NAME}"
+    break
+  fi
+  echo "  Attempt ${i}/${MAX_ATTEMPTS}: deployment not yet created, retrying in ${POLL_INTERVAL}s..."
+  sleep "${POLL_INTERVAL}"
+done
+
+if [[ -z "${DEPLOYMENT_NAME}" ]]; then
+  echo "Error: could not find deployment for ${MODEL_NAME} after $((MAX_ATTEMPTS * POLL_INTERVAL))s" >&2
+  exit 1
+fi
+
+echo "Waiting for deployment to become available..."
+for (( i=1; i<=MAX_ATTEMPTS; i++ )); do
+  REPLICAS=$(oc get deployment/"${DEPLOYMENT_NAME}" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+  AVAILABLE=$(oc get deployment/"${DEPLOYMENT_NAME}" -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo "0")
+
+  if [[ "${AVAILABLE}" -ge 1 ]]; then
+    echo "Deployment is available."
+    break
+  fi
+
+  if [[ "${REPLICAS}" -eq 0 ]]; then
+    echo "  Attempt ${i}/${MAX_ATTEMPTS}: deployment scaled to 0, scaling back to 1..."
+    oc scale deployment/"${DEPLOYMENT_NAME}" --replicas=1 --as system:admin
+  else
+    echo "  Attempt ${i}/${MAX_ATTEMPTS}: waiting for pod to become ready..."
+  fi
+
+  sleep "${POLL_INTERVAL}"
+done
+
+AVAILABLE=$(oc get deployment/"${DEPLOYMENT_NAME}" -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo "0")
+if [[ "${AVAILABLE}" -lt 1 ]]; then
+  echo "Warning: deployment is not yet available after $((MAX_ATTEMPTS * POLL_INTERVAL))s, check manually"
 fi
 
 echo "Model deployment complete."

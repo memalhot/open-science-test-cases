@@ -1,0 +1,44 @@
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: vllm-runtime
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    openshift.io/display-name: vLLM Runtime
+spec:
+  builtInAdapter:
+    modelLoadingTimeoutMillis: 90000
+  containers:
+    - name: kserve-container
+      image: quay.io/modh/vllm:rhoai-2.17-cuda
+      command:
+        - python
+        - -m
+        - vllm.entrypoints.openai.api_server
+      args:
+        - --port=8080
+        - --model=/mnt/models
+        - --served-model-name={{.Name}}
+        - --dtype=float16
+        - --max-model-len=4096
+      env:
+        - name: HF_HUB_OFFLINE
+          value: "1"
+      ports:
+        - containerPort: 8080
+          name: http1
+          protocol: TCP
+      resources:
+        limits:
+          cpu: "4"
+          memory: 24Gi
+          nvidia.com/gpu: "1"
+        requests:
+          cpu: "2"
+          memory: 12Gi
+          nvidia.com/gpu: "1"
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
