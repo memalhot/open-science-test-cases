@@ -29,8 +29,15 @@ ACCESS_TOKEN=<your-hf-token>
 Do **not** commit this file.
 
 ### 2. Deploy
+In deploy.sh add the project you want to deploy in:
 
+```
+PROJECT=<your-project-here>
+```
+
+Then run the deploy script:
 ```bash
+chmod +x deploy.sh
 ./deploy.sh
 ```
 
@@ -69,6 +76,7 @@ Other available endpoints:
 ## Cleanup
 
 ```bash
+chmod +x cleanup.sh
 ./cleanup.sh
 ```
 
@@ -89,8 +97,3 @@ This removes all deployed resources: route, external service, InferenceService, 
 | `python/delete-bucket.py` | Deletes all objects and the bucket from MinIO |
 | `credentials.env` | Credentials file (gitignored, create manually) |
 
-## Configuration
-
-Edit `deploy.sh` to change:
-
-- `PROJECT` — the OpenShift project/namespace to deploy into
