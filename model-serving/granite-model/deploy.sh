@@ -63,8 +63,8 @@ oc process -f yaml/inference-service.yaml \
 # Large models can trigger an RHOAI bug where the deployment scales to 0
 # before the model finishes loading. Poll and re-scale until it's available.
 echo "Waiting for deployment to appear..."
-MAX_ATTEMPTS=60
-POLL_INTERVAL=15
+MAX_ATTEMPTS=80
+POLL_INTERVAL=60
 
 DEPLOYMENT_NAME=""
 for (( i=1; i<=MAX_ATTEMPTS; i++ )); do
