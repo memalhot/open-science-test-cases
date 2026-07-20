@@ -63,8 +63,8 @@ oc process -f yaml/inference-service.yaml \
 # Large models can trigger an RHOAI bug where the deployment scales to 0
 # before the model finishes loading. Poll and re-scale until it's available.
 echo "Waiting for deployment to appear..."
-MAX_ATTEMPTS=30
-POLL_INTERVAL=10
+MAX_ATTEMPTS=60
+POLL_INTERVAL=15
 
 DEPLOYMENT_NAME=""
 for (( i=1; i<=MAX_ATTEMPTS; i++ )); do
@@ -107,5 +107,39 @@ if [[ "${AVAILABLE}" -lt 1 ]]; then
   echo "Warning: deployment is not yet available after $((MAX_ATTEMPTS * POLL_INTERVAL))s, check manually"
 fi
 
+# Create a routable service and external route
+# KServe creates a headless service which routes cannot target directly
+echo "Creating external service and route..."
+oc create service clusterip "${MODEL_NAME}-external" \
+  --tcp=80:8080 -n "${PROJECT}" --as system:admin 2>/dev/null || true
+oc set selector service "${MODEL_NAME}-external" \
+  app="isvc.${MODEL_NAME}-predictor" -n "${PROJECT}" --as system:admin
+
+oc create route edge "${MODEL_NAME}" \
+  --service="${MODEL_NAME}-external" \
+  --port=80-8080 -n "${PROJECT}" --as system:admin 2>/dev/null || true
+
+MODEL_URL=$(oc get route "${MODEL_NAME}" -n "${PROJECT}" -o jsonpath='https://{.spec.host}')
+
 echo "Model deployment complete."
 echo "Check status: oc get inferenceservice ${MODEL_NAME}"
+echo "Model endpoint: ${MODEL_URL}/v1/chat/completions"
+
+echo "Verifying model is responding..."
+RESPONSE=$(curl -sk -w "\n%{http_code}" "${MODEL_URL}/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "'"${MODEL_NAME}"'",
+    "messages": [{"role": "user", "content": "Hello, are you working?"}],
+    "max_tokens": 20
+  }')
+HTTP_CODE=$(echo "${RESPONSE}" | tail -1)
+BODY=$(echo "${RESPONSE}" | sed '$d')
+
+if [[ "${HTTP_CODE}" -eq 200 ]]; then
+  echo "Model is running correctly (HTTP ${HTTP_CODE})."
+  echo "Response: ${BODY}"
+else
+  echo "Warning: model returned HTTP ${HTTP_CODE}" >&2
+  echo "Response: ${BODY}" >&2
+fi
