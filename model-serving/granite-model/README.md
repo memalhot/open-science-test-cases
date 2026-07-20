@@ -94,25 +94,3 @@ This removes all deployed resources: route, external service, InferenceService, 
 Edit `deploy.sh` to change:
 
 - `PROJECT` — the OpenShift project/namespace to deploy into
-
-## Troubleshooting
-
-**Deployment stuck at 0/1 ready**
-
-RHOAI can scale the deployment to 0 before the model finishes loading. The deploy script handles this automatically, but if it times out, manually scale back up:
-
-```bash
-oc scale deployment granite-model-predictor --replicas=1 --as system:admin
-```
-
-**`HeaderTooLarge` error in vLLM logs**
-
-The model weights in MinIO are Git LFS pointers (135 bytes) instead of actual weights (~5GB each). Re-run `git lfs pull` in the model directory and re-upload with `python python/model-to-s3.py`.
-
-**503 / "Application is not available" from the route**
-
-KServe creates a headless service which OpenShift routes cannot target. The deploy script creates a separate `granite-model-external` ClusterIP service for routing. If the route was deleted, recreate it:
-
-```bash
-oc create route edge granite-model --service=granite-model-external --port=80-8080 --as system:admin
-```
