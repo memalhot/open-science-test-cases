@@ -24,7 +24,10 @@ fi
 export S3_ENDPOINT
 
 git clone "https://memalhot:${ACCESS_TOKEN}@huggingface.co/ibm-granite/granite-3.0-8b-instruct"
-sleep 3
+cd granite-3.0-8b-instruct
+git lfs install
+git lfs pull
+cd ..
 
 python python/create-bucket.py
 sleep 3
