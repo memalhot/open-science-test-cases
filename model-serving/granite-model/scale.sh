@@ -38,6 +38,18 @@ case "${ACTION}" in
 
       if [[ "${AVAILABLE}" -ge 1 ]]; then
         echo "Deployment is available."
+
+        echo "Creating external service and route..."
+        oc create service clusterip "${MODEL_NAME}-external" \
+          --tcp=80:8080 -n "${PROJECT}" --as system:admin 2>/dev/null || true
+        oc set selector service "${MODEL_NAME}-external" \
+          app="isvc.${MODEL_NAME}-predictor" -n "${PROJECT}" --as system:admin
+        oc create route edge "${MODEL_NAME}" \
+          --service="${MODEL_NAME}-external" \
+          --port=80-8080 -n "${PROJECT}" --as system:admin 2>/dev/null || true
+
+        MODEL_URL=$(oc get route "${MODEL_NAME}" -n "${PROJECT}" -o jsonpath='https://{.spec.host}')
+        echo "Model endpoint: ${MODEL_URL}/v1/chat/completions"
         exit 0
       fi
 
