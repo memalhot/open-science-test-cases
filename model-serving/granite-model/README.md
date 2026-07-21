@@ -73,6 +73,15 @@ Other available endpoints:
 - `POST /v1/completions` — text completion
 - `POST /v1/embeddings` — embeddings
 
+## Scaling
+
+Scale the model deployment up or down without redeploying:
+
+```bash
+./scale.sh up    # scale to 1 replica, create route, wait for readiness
+./scale.sh down  # scale to 0 replicas
+```
+
 ## Cleanup
 
 ```bash
@@ -95,5 +104,6 @@ This removes all deployed resources: route, external service, InferenceService, 
 | `python/create-bucket.py` | Creates the `models` S3 bucket |
 | `python/model-to-s3.py` | Uploads the local model directory to MinIO |
 | `python/delete-bucket.py` | Deletes all objects and the bucket from MinIO |
+| `scale.sh` | Scale the model deployment up (with route creation) or down |
 | `credentials.env` | Credentials file (gitignored, create manually) |
 
