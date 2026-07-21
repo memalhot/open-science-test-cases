@@ -3,3 +3,4 @@ credentials.env
 *credentials*
 granite-3.0-8b-instruct/
 *.env
+results/
