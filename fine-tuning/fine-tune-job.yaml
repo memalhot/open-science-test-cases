@@ -1,0 +1,300 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: granite-fine-tune-job
+parameters:
+  - name: JOB_NAME
+    description: Name for the fine-tuning job
+    value: granite-fine-tune
+  - name: BASE_MODEL_PATH
+    description: S3 path to the base model
+    value: models/granite-3.0-8b-instruct
+  - name: OUTPUT_PATH
+    description: S3 path for the fine-tuned adapter output
+    value: models/granite-3.0-8b-instruct-finetuned
+  - name: DATASET_NAME
+    description: HuggingFace dataset name or S3 path to a JSONL dataset
+    value: tatsu-lab/alpaca
+  - name: NUM_EPOCHS
+    description: Number of training epochs
+    value: "3"
+  - name: LEARNING_RATE
+    description: Learning rate
+    value: "2e-4"
+  - name: BATCH_SIZE
+    description: Per-device training batch size
+    value: "4"
+  - name: LORA_RANK
+    description: LoRA rank (higher = more capacity, more memory)
+    value: "16"
+  - name: MAX_SEQ_LENGTH
+    description: Maximum sequence length for training
+    value: "2048"
+  - name: GPU_COUNT
+    description: Number of GPUs per worker
+    value: "1"
+objects:
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: ${JOB_NAME}-script
+    data:
+      fine-tune.py: |
+        import os
+        import json
+        import tempfile
+        import boto3
+        import botocore
+        import torch
+        from datasets import load_dataset
+        from transformers import (
+            AutoModelForCausalLM,
+            AutoTokenizer,
+            BitsAndBytesConfig,
+            TrainingArguments,
+        )
+        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+        from trl import SFTTrainer
+
+        S3_ENDPOINT = os.environ["AWS_S3_ENDPOINT"]
+        ACCESS_KEY = os.environ["AWS_ACCESS_KEY_ID"]
+        SECRET_KEY = os.environ["AWS_SECRET_ACCESS_KEY"]
+        BUCKET = os.environ.get("AWS_S3_BUCKET", "models")
+        BASE_MODEL_PATH = os.environ["BASE_MODEL_PATH"]
+        OUTPUT_PATH = os.environ["OUTPUT_PATH"]
+        DATASET_NAME = os.environ.get("DATASET_NAME", "tatsu-lab/alpaca")
+        NUM_EPOCHS = int(os.environ.get("NUM_EPOCHS", "3"))
+        LEARNING_RATE = float(os.environ.get("LEARNING_RATE", "2e-4"))
+        BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "4"))
+        LORA_RANK = int(os.environ.get("LORA_RANK", "16"))
+        MAX_SEQ_LENGTH = int(os.environ.get("MAX_SEQ_LENGTH", "2048"))
+
+        session = boto3.session.Session(
+            aws_access_key_id=ACCESS_KEY,
+            aws_secret_access_key=SECRET_KEY,
+        )
+        s3 = session.resource(
+            "s3",
+            endpoint_url=S3_ENDPOINT,
+            region_name="us-east-1",
+            config=botocore.client.Config(signature_version="s3v4"),
+        )
+        bucket = s3.Bucket(BUCKET)
+
+        # ---- Download base model from MinIO ----
+        local_model_dir = "/tmp/base-model"
+        os.makedirs(local_model_dir, exist_ok=True)
+        print(f"Downloading model from s3://{BUCKET}/{BASE_MODEL_PATH}")
+        for obj in bucket.objects.filter(Prefix=BASE_MODEL_PATH):
+            rel = os.path.relpath(obj.key, BASE_MODEL_PATH)
+            if rel == "." or obj.key.endswith("/"):
+                continue
+            local_file = os.path.join(local_model_dir, rel)
+            os.makedirs(os.path.dirname(local_file), exist_ok=True)
+            print(f"  {obj.key} -> {local_file}")
+            bucket.download_file(obj.key, local_file)
+        print("Model download complete.")
+
+        # ---- Load dataset ----
+        if DATASET_NAME.startswith("s3://") or DATASET_NAME.endswith(".jsonl"):
+            local_data = "/tmp/train_data.jsonl"
+            data_key = DATASET_NAME.replace("s3://", "").lstrip("/")
+            bucket.download_file(data_key, local_data)
+            dataset = load_dataset("json", data_files=local_data, split="train")
+        else:
+            dataset = load_dataset(DATASET_NAME, split="train")
+
+        # ---- Format dataset for instruction tuning ----
+        def format_instruction(example):
+            if "instruction" in example:
+                text = f"<|user|>\n{example['instruction']}"
+                if example.get("input"):
+                    text += f"\n{example['input']}"
+                text += f"\n<|assistant|>\n{example.get('output', '')}"
+            elif "messages" in example:
+                parts = []
+                for msg in example["messages"]:
+                    parts.append(f"<|{msg['role']}|>\n{msg['content']}")
+                text = "\n".join(parts)
+            elif "text" in example:
+                text = example["text"]
+            else:
+                text = str(example)
+            return {"text": text}
+
+        dataset = dataset.map(format_instruction)
+
+        # ---- QLoRA config ----
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+
+        print("Loading base model with QLoRA quantization...")
+        model = AutoModelForCausalLM.from_pretrained(
+            local_model_dir,
+            quantization_config=bnb_config,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+        model = prepare_model_for_kbit_training(model)
+
+        tokenizer = AutoTokenizer.from_pretrained(local_model_dir, trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        lora_config = LoraConfig(
+            r=LORA_RANK,
+            lora_alpha=LORA_RANK * 2,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+
+        output_dir = "/tmp/fine-tuned-output"
+        training_args = TrainingArguments(
+            output_dir=output_dir,
+            num_train_epochs=NUM_EPOCHS,
+            per_device_train_batch_size=BATCH_SIZE,
+            gradient_accumulation_steps=4,
+            learning_rate=LEARNING_RATE,
+            weight_decay=0.01,
+            warmup_ratio=0.03,
+            lr_scheduler_type="cosine",
+            logging_steps=10,
+            save_strategy="epoch",
+            bf16=True,
+            gradient_checkpointing=True,
+            max_grad_norm=0.3,
+            report_to="none",
+        )
+
+        trainer = SFTTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=dataset,
+            peft_config=lora_config,
+            max_seq_length=MAX_SEQ_LENGTH,
+            tokenizer=tokenizer,
+            dataset_text_field="text",
+            packing=True,
+        )
+
+        print("Starting fine-tuning...")
+        trainer.train()
+
+        print("Saving adapter...")
+        adapter_dir = os.path.join(output_dir, "final-adapter")
+        trainer.save_model(adapter_dir)
+        tokenizer.save_pretrained(adapter_dir)
+
+        # ---- Upload adapter to MinIO ----
+        print(f"Uploading adapter to s3://{BUCKET}/{OUTPUT_PATH}")
+        for root, _, files in os.walk(adapter_dir):
+            for fname in files:
+                local_file = os.path.join(root, fname)
+                rel = os.path.relpath(local_file, adapter_dir)
+                s3_key = f"{OUTPUT_PATH}/{rel}"
+                print(f"  {local_file} -> {s3_key}")
+                bucket.upload_file(local_file, s3_key)
+
+        print("Fine-tuning complete. Adapter uploaded to MinIO.")
+
+  - apiVersion: kubeflow.org/v1
+    kind: PyTorchJob
+    metadata:
+      name: ${JOB_NAME}
+      labels:
+        opendatahub.io/dashboard: "true"
+    spec:
+      pytorchReplicaSpecs:
+        Master:
+          replicas: 1
+          restartPolicy: OnFailure
+          template:
+            metadata:
+              labels:
+                app: ${JOB_NAME}
+            spec:
+              tolerations:
+                - effect: NoSchedule
+                  key: nvidia.com/gpu
+                  operator: Exists
+              containers:
+                - name: pytorch
+                  image: quay.io/memalhot/granite-fine-tune:latest
+                  command:
+                    - /bin/bash
+                    - -c
+                    - |
+                      python /scripts/fine-tune.py
+                  env:
+                    - name: AWS_ACCESS_KEY_ID
+                      valueFrom:
+                        secretKeyRef:
+                          name: minio-data-connection
+                          key: AWS_ACCESS_KEY_ID
+                    - name: AWS_SECRET_ACCESS_KEY
+                      valueFrom:
+                        secretKeyRef:
+                          name: minio-data-connection
+                          key: AWS_SECRET_ACCESS_KEY
+                    - name: AWS_S3_ENDPOINT
+                      valueFrom:
+                        secretKeyRef:
+                          name: minio-data-connection
+                          key: AWS_S3_ENDPOINT
+                    - name: AWS_S3_BUCKET
+                      valueFrom:
+                        secretKeyRef:
+                          name: minio-data-connection
+                          key: AWS_S3_BUCKET
+                    - name: BASE_MODEL_PATH
+                      value: ${BASE_MODEL_PATH}
+                    - name: OUTPUT_PATH
+                      value: ${OUTPUT_PATH}
+                    - name: DATASET_NAME
+                      value: ${DATASET_NAME}
+                    - name: NUM_EPOCHS
+                      value: ${NUM_EPOCHS}
+                    - name: LEARNING_RATE
+                      value: ${LEARNING_RATE}
+                    - name: BATCH_SIZE
+                      value: ${BATCH_SIZE}
+                    - name: LORA_RANK
+                      value: ${LORA_RANK}
+                    - name: MAX_SEQ_LENGTH
+                      value: ${MAX_SEQ_LENGTH}
+                    - name: HF_HOME
+                      value: /tmp/hf_home
+                    - name: TRANSFORMERS_CACHE
+                      value: /tmp/hf_home
+                    - name: PIP_TARGET
+                      value: /tmp/pip-packages
+                    - name: PYTHONPATH
+                      value: /tmp/pip-packages
+                  resources:
+                    requests:
+                      cpu: "4"
+                      memory: 24Gi
+                      nvidia.com/gpu: ${GPU_COUNT}
+                    limits:
+                      cpu: "8"
+                      memory: 48Gi
+                      nvidia.com/gpu: ${GPU_COUNT}
+                  volumeMounts:
+                    - name: scripts
+                      mountPath: /scripts
+                    - name: shm
+                      mountPath: /dev/shm
+              volumes:
+                - name: scripts
+                  configMap:
+                    name: ${JOB_NAME}-script
+                - name: shm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 8Gi
