@@ -1,0 +1,112 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: open-webui
+parameters:
+  - name: MODEL_URL
+    description: Internal cluster URL of the model endpoint (e.g. http://granite-model-external.mm-test.svc.cluster.local)
+    required: true
+objects:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: open-webui-pvc
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      volumeMode: Filesystem
+      resources:
+        requests:
+          storage: 2Gi
+
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: open-webui
+    spec:
+      replicas: 1
+      strategy:
+        type: Recreate
+      selector:
+        matchLabels:
+          app: open-webui
+      template:
+        metadata:
+          labels:
+            app: open-webui
+        spec:
+          containers:
+            - name: open-webui
+              image: ghcr.io/open-webui/open-webui:main
+              ports:
+                - containerPort: 8080
+                  protocol: TCP
+              env:
+                - name: OPENAI_API_BASE_URLS
+                  value: "${MODEL_URL}/v1"
+                - name: OPENAI_API_KEYS
+                  value: "unused"
+                - name: WEBUI_AUTH
+                  value: "false"
+                - name: ENABLE_OLLAMA_API
+                  value: "false"
+                - name: ENABLE_OPENAI_API
+                  value: "true"
+                - name: WEBUI_SECRET_KEY
+                  value: "open-science-webui-key"
+                - name: HOME
+                  value: "/tmp"
+              volumeMounts:
+                - name: data
+                  mountPath: /app/backend/data
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 512Mi
+                limits:
+                  cpu: "1"
+                  memory: 2Gi
+              livenessProbe:
+                httpGet:
+                  path: /health
+                  port: 8080
+                initialDelaySeconds: 60
+                periodSeconds: 15
+              readinessProbe:
+                httpGet:
+                  path: /health
+                  port: 8080
+                initialDelaySeconds: 30
+                periodSeconds: 10
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: open-webui-pvc
+
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: open-webui-service
+    spec:
+      type: ClusterIP
+      selector:
+        app: open-webui
+      ports:
+        - name: ui
+          port: 8080
+          targetPort: 8080
+          protocol: TCP
+
+  - apiVersion: route.openshift.io/v1
+    kind: Route
+    metadata:
+      name: open-webui
+    spec:
+      to:
+        kind: Service
+        name: open-webui-service
+      port:
+        targetPort: ui
+      tls:
+        termination: edge
+        insecureEdgeTerminationPolicy: Redirect
