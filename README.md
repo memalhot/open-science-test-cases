@@ -2,6 +2,8 @@
 
 A collection of test cases and examples for open science workflows and deployments.
 
+Before any of the inference, UI, or fine tuning tests can be run, the model must be deployed first.
+
 ## Test Cases
 
 | Test Case | Description | Category | Link |
