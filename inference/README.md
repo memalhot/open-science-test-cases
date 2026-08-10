@@ -65,10 +65,33 @@ Tests include:
 
 Results are saved to `results/<timestamp>-manual/`.
 
+## Extended Inference Tests
+
+Runs a deeper validation suite covering health checks, content correctness, schema validation, determinism, token limit enforcement, streaming (SSE), error handling, large input context, latency SLO, and stop sequences:
+
+```bash
+./test-inference-extended.sh
+```
+
+Tests include:
+- Health & readiness endpoints (`/health`, `/ready`)
+- Content validation (math, factual recall, multi-turn memory)
+- Response schema validation (chat completions and text completions fields)
+- Determinism check (3 identical runs at `temperature=0`)
+- Token limit enforcement (`max_tokens` respected)
+- Streaming SSE (chunk count, `[DONE]` marker, role in first chunk)
+- Error handling (wrong model 404, empty/missing messages 400, invalid params 400)
+- Large input context (~200 repeated sentences)
+- Latency SLO check (configurable via `LATENCY_SLO_MS`, default 10000ms)
+- Stop sequence behavior (`finish_reason=stop`)
+
+Results are saved to `results/<timestamp>-extended/`.
+
 ## Files
 
 | File | Purpose |
 |---|---|
 | `benchmark.sh` | Automated sweep benchmark using inference-benchmarker |
 | `test-inference.sh` | Manual curl-based inference tests |
+| `test-inference-extended.sh` | Extended validation suite (content, schema, streaming, errors, SLO) |
 | `results/` | Timestamped benchmark and test results |
