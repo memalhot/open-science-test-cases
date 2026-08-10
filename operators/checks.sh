@@ -231,6 +231,29 @@ echo "=== Required Pods ==="
 check_pods_running "app=nfd-worker" "openshift-nfd" "NFD Worker"
 check_pods_running "app.kubernetes.io/component=nvidia-driver" "nvidia-gpu-operator" "NVIDIA GPU Driver"
 
+# --- Networking ---
+
+echo ""
+echo "=== Networking ==="
+
+echo ""
+echo "--- Service Mesh (Istio) Control Plane ---"
+
+SMCP_STATUS=$(oc get servicemeshcontrolplane -A \
+  -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+
+if [[ "${SMCP_STATUS}" == "True" ]]; then
+  SMCP_NAME=$(oc get servicemeshcontrolplane -A \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "unknown")
+  SMCP_NS=$(oc get servicemeshcontrolplane -A \
+    -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || echo "unknown")
+  echo "PASS (${SMCP_NAME} in ${SMCP_NS}, Ready: True)"
+  PASSED=$((PASSED + 1))
+else
+  echo "FAIL (ServiceMeshControlPlane Ready=${SMCP_STATUS:-not found})" >&2
+  FAILED=$((FAILED + 1))
+fi
+
 # --- Summary ---
 
 echo ""
