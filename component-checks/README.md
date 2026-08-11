@@ -5,7 +5,7 @@ Validates that all OpenShift operators, configurations, and RHOAI components req
 ## Usage
 
 ```bash
-cd operators
+cd component-checks
 ./checks.sh
 ```
 
@@ -38,6 +38,26 @@ Verifies each operator's Deployment has `Available: True`.
 Checks that each component condition is `True` on the DataScienceCluster resource:
 
 Dashboard, Workbenches, DataSciencePipelines, CodeFlare, KServe, Ray, TrustyAI, ModelMeshServing, Kueue
+
+### GPU Node Labels
+
+For each node with `nvidia.com/gpu.present=true`, verifies:
+
+- NFD PCI label is present (`pci-10de.present` or `pci-0302_10de.present`)
+- `nvidia.com/gpu.count` label exists
+
+### Required Pods
+
+| Pod | Label Selector | Namespace |
+|-----|---------------|-----------|
+| NFD Worker | `app=nfd-worker` | `openshift-nfd` |
+| NVIDIA GPU Driver | `app.kubernetes.io/component=nvidia-driver` | `nvidia-gpu-operator` |
+
+### Networking
+
+| Resource | Expected State |
+|----------|---------------|
+| ServiceMeshControlPlane | `Ready: True` |
 
 ## Output
 
