@@ -4,3 +4,4 @@ credentials.env
 granite-3.0-8b-instruct/
 *.env
 results/
+Qwen2.5-3B-Instruct/
