@@ -14,4 +14,5 @@ Before any of the inference, UI, or fine tuning tests can be run, the model must
 | Extended Inference Tests | Validation suite: content correctness, schema validation, determinism, streaming, error handling, latency SLO, stop sequences | Inference | [inference/test-inference-extended.sh](https://github.com/memalhot/open-science-test-cases/tree/main/inference) |
 | Open WebUI | Public chat UI for interacting with the deployed model, using [Open WebUI](https://github.com/endpoints/open-webui) on OpenShift | Endpoints | [endpoints/open-webui](https://github.com/memalhot/open-science-test-cases/tree/main/endpoints/open-webui) |
 | Fine-Tuning | QLoRA fine-tuning of Granite 3.0 8B Instruct on OpenShift using a Kubeflow PyTorchJob, with configurable datasets and training parameters | Fine-Tuning | [fine-tuning](https://github.com/memalhot/open-science-test-cases/tree/main/fine-tuning) |
+| Component Checks | Validates operator health, DataScienceCluster readiness, GPU node labels, required pods, and networking for the target OpenShift cluster | Platform Readiness | [component-checks](https://github.com/memalhot/open-science-test-cases/tree/main/component-checks) |
 
