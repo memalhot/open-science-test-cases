@@ -1,0 +1,51 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: qwen-inference-service
+parameters:
+  - name: MODEL_NAME
+    description: Name for the deployed model
+    value: qwen-model
+  - name: MODEL_PATH
+    description: Path to model within the S3 bucket
+    value: models/Qwen2.5-3B-Instruct
+  - name: SERVING_RUNTIME
+    description: Name of the vLLM ServingRuntime
+    required: true
+objects:
+  - apiVersion: serving.kserve.io/v1beta1
+    kind: InferenceService
+    metadata:
+      name: ${MODEL_NAME}
+      annotations:
+        openshift.io/display-name: ${MODEL_NAME}
+        serving.knative.openshift.io/enablePassthrough: "true"
+        sidecar.istio.io/inject: "true"
+        sidecar.istio.io/rewriteAppHTTPProbers: "true"
+        serving.kserve.io/deploymentMode: RawDeployment
+      labels:
+        opendatahub.io/dashboard: "true"
+    spec:
+      predictor:
+        maxReplicas: 1
+        minReplicas: 1
+        model:
+          modelFormat:
+            name: vLLM
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+          runtime: ${SERVING_RUNTIME}
+          storage:
+            key: minio-data-connection
+            path: ${MODEL_PATH}
+        tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Exists
