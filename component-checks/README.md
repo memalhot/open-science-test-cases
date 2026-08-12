@@ -6,7 +6,8 @@ Validates that all OpenShift operators, configurations, and RHOAI components req
 
 ```bash
 cd component-checks
-./checks.sh
+./checks.sh          # operator & platform readiness
+./label-checks.sh    # GPU node labels & taints
 ```
 
 Requires `oc` CLI authenticated to the target cluster.
@@ -39,12 +40,25 @@ Checks that each component condition is `True` on the DataScienceCluster resourc
 
 Dashboard, Workbenches, DataSciencePipelines, CodeFlare, KServe, Ray, TrustyAI, ModelMeshServing, Kueue
 
-### GPU Node Labels
+### GPU Node Labels (`checks.sh`)
 
 For each node with `nvidia.com/gpu.present=true`, verifies:
 
 - NFD PCI label is present (`pci-10de.present` or `pci-0302_10de.present`)
 - `nvidia.com/gpu.count` label exists
+
+### GPU Node Labels & Taints (`label-checks.sh`)
+
+Separate script for GPU node label and taint validation. For each node with `nvidia.com/gpu.present=true`, verifies:
+
+**Labels:**
+- NFD PCI label (`pci-10de.present` or `pci-0302_10de.present`)
+- `nvidia.com/gpu.count`
+- `nvidia.com/gpu.product`
+- `nvidia.com/gpu.memory`
+
+**Taints:**
+- `nvidia.com/gpu:NoSchedule` — prevents non-GPU workloads from being scheduled on GPU nodes
 
 ### Required Pods
 
