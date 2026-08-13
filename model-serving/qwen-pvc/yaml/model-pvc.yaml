@@ -1,0 +1,29 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: model-pvc
+parameters:
+  - name: PVC_NAME
+    description: Name of the PersistentVolumeClaim
+    value: qwen-model-pvc
+  - name: STORAGE_SIZE
+    description: Size of the PVC
+    value: 20Gi
+  - name: STORAGE_CLASS
+    description: StorageClass to use (block or file)
+    required: true
+  - name: ACCESS_MODE
+    description: Access mode (ReadWriteOnce for block, ReadWriteMany for file)
+    value: ReadWriteOnce
+objects:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: ${PVC_NAME}
+    spec:
+      accessModes:
+        - ${ACCESS_MODE}
+      storageClassName: ${STORAGE_CLASS}
+      resources:
+        requests:
+          storage: ${STORAGE_SIZE}

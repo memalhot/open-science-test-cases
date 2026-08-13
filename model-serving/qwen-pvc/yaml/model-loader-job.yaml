@@ -1,0 +1,56 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: model-loader-job
+parameters:
+  - name: PVC_NAME
+    description: PVC to load the model into
+    value: qwen-model-pvc
+  - name: MODEL_REPO
+    description: HuggingFace model repository
+    value: Qwen/Qwen2.5-3B-Instruct
+  - name: MODEL_DIR
+    description: Directory name on the PVC
+    value: Qwen2.5-3B-Instruct
+  - name: ACCESS_TOKEN
+    description: HuggingFace access token
+    required: true
+objects:
+  - apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: model-loader
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: loader
+              image: registry.access.redhat.com/ubi9/python-311:latest
+              command:
+                - bash
+                - -c
+                - |
+                  pip install -q huggingface_hub[hf_transfer]
+                  export HF_HUB_ENABLE_HF_TRANSFER=1
+                  huggingface-cli download ${MODEL_REPO} \
+                    --local-dir /mnt/models/${MODEL_DIR} \
+                    --token ${ACCESS_TOKEN}
+                  echo "Model download complete"
+                  ls -lh /mnt/models/${MODEL_DIR}/
+              resources:
+                requests:
+                  cpu: "2"
+                  memory: 4Gi
+                limits:
+                  cpu: "4"
+                  memory: 8Gi
+              volumeMounts:
+                - name: model-volume
+                  mountPath: /mnt/models
+          volumes:
+            - name: model-volume
+              persistentVolumeClaim:
+                claimName: ${PVC_NAME}

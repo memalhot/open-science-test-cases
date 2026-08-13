@@ -1,0 +1,44 @@
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: vllm-runtime
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+spec:
+  containers:
+    - name: kserve-container
+      image: quay.io/modh/vllm@sha256:4f550996130e7d16cacb24ca9a2865e7cf51eddaab014ceaf31a1ea6ef86d4ec
+      command:
+        - python
+        - -m
+        - vllm.entrypoints.openai.api_server
+      args:
+        - --port=8080
+        - --model=/mnt/models
+        - --served-model-name={{.Name}}
+        - --dtype=float16
+        - --max-model-len=4096
+        - --enable-auto-tool-choice
+        - --tool-call-parser=hermes
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      resources:
+        limits:
+          cpu: "4"
+          memory: 16Gi
+          nvidia.com/gpu: "1"
+        requests:
+          cpu: "2"
+          memory: 8Gi
+          nvidia.com/gpu: "1"
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
