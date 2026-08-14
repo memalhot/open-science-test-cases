@@ -1,0 +1,166 @@
+---
+# Sample agent deployment following RHOAI 3.4 AgentCard/AgentRuntime pattern
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-agent
+  labels:
+    app: test-agent
+    kagenti.io/type: agent                    # Required for AgentCard creation
+    protocol.kagenti.io/a2a: "true"         # Agent-to-agent protocol support
+    kagenti.io/inject: enabled              # Enable sidecar injection
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-agent
+  template:
+    metadata:
+      labels:
+        app: test-agent
+        kagenti.io/type: agent
+        protocol.kagenti.io/a2a: "true"
+    spec:
+      containers:
+      - name: agent
+        image: registry.redhat.io/ubi9/python-39:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: metrics
+        command:
+        - /bin/bash
+        - -c
+        - |
+          # Simple mock agent for testing
+          cat > /tmp/agent.py << 'EOF'
+          import http.server
+          import socketserver
+          import json
+          import threading
+          from urllib.parse import urlparse, parse_qs
+
+          class AgentHandler(http.server.SimpleHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == '/health':
+                      self.send_response(200)
+                      self.send_header('Content-type', 'application/json')
+                      self.end_headers()
+                      response = {"status": "healthy", "agent": "test-agent", "version": "1.0"}
+                      self.wfile.write(json.dumps(response).encode())
+                  elif self.path == '/capabilities':
+                      self.send_response(200)
+                      self.send_header('Content-type', 'application/json')
+                      self.end_headers()
+                      response = {
+                          "capabilities": ["inference", "batch-processing"],
+                          "protocols": ["a2a", "http"],
+                          "endpoints": {
+                              "health": "/health",
+                              "inference": "/v1/inference",
+                              "metrics": ":9090/metrics"
+                          }
+                      }
+                      self.wfile.write(json.dumps(response).encode())
+                  elif self.path.startswith('/v1/inference'):
+                      self.send_response(200)
+                      self.send_header('Content-type', 'application/json')
+                      self.end_headers()
+                      response = {"result": "mock inference response", "model": "test-agent"}
+                      self.wfile.write(json.dumps(response).encode())
+                  else:
+                      self.send_response(404)
+                      self.end_headers()
+
+          def metrics_server():
+              # Simple metrics endpoint on port 9090
+              with socketserver.TCPServer(("", 9090), http.server.SimpleHTTPRequestHandler) as httpd:
+                  httpd.serve_forever()
+
+          # Start metrics server in background
+          metrics_thread = threading.Thread(target=metrics_server, daemon=True)
+          metrics_thread.start()
+
+          # Main agent server
+          with socketserver.TCPServer(("", 8080), AgentHandler) as httpd:
+              print("Agent server running on port 8080")
+              httpd.serve_forever()
+          EOF
+
+          python3 /tmp/agent.py
+        env:
+        - name: AGENT_NAME
+          value: test-agent
+        - name: OTEL_SERVICE_NAME
+          value: test-agent
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "250m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-agent
+  labels:
+    app: test-agent
+spec:
+  selector:
+    app: test-agent
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+
+---
+# AgentCard - auto-created by platform but shown here for reference
+apiVersion: kagenti.io/v1alpha1
+kind: AgentCard
+metadata:
+  name: test-agent
+spec:
+  displayName: "Test Agent"
+  description: "Sample agent for testing deployment verification"
+  capabilities:
+  - inference
+  - batch-processing
+  endpoints:
+  - name: http
+    url: http://test-agent:8080
+    protocol: http
+  - name: a2a
+    url: http://test-agent:8080
+    protocol: a2a
+  protocols:
+  - a2a
+  - http
+  supportedFormats:
+  - application/json
+
+---
+# AgentRuntime - manages sidecars and identity
+apiVersion: kagenti.io/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: test-agent
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: test-agent
+  authentication:
+    enabled: true
+    jwkSources:
+    - url: "https://kubernetes.default.svc.cluster.local"
+  tracing:
+    enabled: true
+    endpoint: "http://jaeger-collector:14268/api/traces"
+    samplingRate: 0.1
