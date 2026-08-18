@@ -1,6 +1,6 @@
 # Operator & Platform Readiness Checks
 
-Validates that all OpenShift operators, configurations, and RHOAI components required by this project are installed and healthy.
+Validates that all OpenShift operators, configurations, and RHOAI components required by this project are installed and healthy. Includes negative tests that verify failure modes behave predictably.
 
 ## Usage
 
@@ -8,6 +8,7 @@ Validates that all OpenShift operators, configurations, and RHOAI components req
 cd component-checks
 ./checks.sh          # operator & platform readiness
 ./taint-checks.sh    # GPU node labels & taints
+./negative-tests.sh  # failure-mode & teardown tests
 ```
 
 Requires `oc` CLI authenticated to the target cluster.
@@ -76,6 +77,31 @@ Separate script for GPU node label and taint validation. For each node with `nvi
 | Resource | Expected State |
 |----------|---------------|
 | ServiceMeshControlPlane | `Ready: True` |
+
+### Negative / Failure-Mode Tests (`negative-tests.sh`)
+
+Verifies that the platform fails predictably — workloads that can't be scheduled don't silently queue up, and teardowns complete cleanly.
+
+**Resource Over-Request:**
+
+| Test | Expected Behavior |
+|------|-------------------|
+| Pod requesting 99 GPUs | Goes `Pending` with `Unschedulable` reason, does not crash or hang |
+| Pod requesting 99Ti memory | Goes `Pending`, does not get OOM-killed on a node |
+| Pending pods discoverable | `oc get pods --field-selector=status.phase=Pending` finds them |
+
+**Teardown Reliability:**
+
+| Test | Expected Behavior |
+|------|-------------------|
+| Unschedulable pod deletion | Completes immediately, pod does not linger |
+| Running pod deletion | Pod fully terminates within 60s |
+| No stuck Terminating pods | No pods with `deletionTimestamp` older than 5 minutes |
+| No orphaned Pending pods | No pods stuck `Pending` longer than 10 minutes |
+
+The last two health checks catch problems from any workload in the namespace, not just the test resources — run them before going on vacation.
+
+Creates temporary `neg-test-*` pods that are cleaned up automatically on exit.
 
 ## Output
 
