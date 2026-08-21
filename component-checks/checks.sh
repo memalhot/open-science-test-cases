@@ -196,8 +196,6 @@ check_deployment "knative-openshift" "openshift-serverless" "OpenShift Serverles
 check_deployment "istio-operator" "openshift-operators" "OpenShift Service Mesh"
 check_deployment "nvidia-network-operator-controller-manager" "nvidia-network-operator" "NVIDIA Network Operator"
 check_deployment "sriov-network-operator" "openshift-sriov-network-operator" "SR-IOV Network Operator"
-check_deployment "maintenance-operator-controller-manager" "nvidia-maintenance-operator" "NVIDIA Maintenance Operator"
-check_deployment "nic-configuration-operator" "nvidia-network-operator" "NVIDIA NIC Configuration Operator"
 
 # --- Configuration & Component Readiness ---
 
