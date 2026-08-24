@@ -1,0 +1,17 @@
+# Model-weight cache PVC.
+# RWX so multiple vLLM pods (now or later, for multi-model) can share the same
+# downloaded weights. FlashBlade/NFS (pure-fb-nfsv4) supports ReadWriteMany.
+# Default 150Gi holds the 31B weights (~62GB) with room to spare.
+# Storage size is overridable per-run via scripts/config.conf (STORAGE_SIZE).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-cache
+  labels: { app: gemma4-vllm }
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: pure-fb-nfsv4
+  resources:
+    requests:
+      storage: 150Gi
