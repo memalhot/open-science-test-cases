@@ -87,6 +87,27 @@ Tests include:
 
 Results are saved to `results/<timestamp>-extended/`.
 
+## Qwen Inference Tests
+
+Runs inference tests against the deployed Qwen2.5-3B-Instruct model, covering API availability, chat completions, content validation, schema checks, determinism, streaming, error handling, and throughput:
+
+```bash
+./test-inference-qwen.sh
+```
+
+Tests include:
+- Health & readiness endpoints (`/health`, `/ready`) and model listing
+- Chat completions (simple, system prompt, multi-turn, temperature variations)
+- Content validation (math, factual recall, multi-turn memory)
+- Text completions
+- Response schema validation (chat and text completions fields)
+- Determinism check (3 identical runs at `temperature=0`)
+- Streaming SSE (chunk count, `[DONE]` marker, role in first chunk)
+- Error handling (wrong model, empty/missing messages, invalid params)
+- Sequential throughput (10 requests) and concurrent throughput (5 parallel)
+
+Results are saved to `results/<timestamp>-qwen/`.
+
 ## Files
 
 | File | Purpose |
@@ -94,4 +115,5 @@ Results are saved to `results/<timestamp>-extended/`.
 | `benchmark.sh` | Automated sweep benchmark using inference-benchmarker |
 | `test-inference.sh` | Manual curl-based inference tests |
 | `test-inference-extended.sh` | Extended validation suite (content, schema, streaming, errors, SLO) |
+| `test-inference-qwen.sh` | Qwen model inference tests (API, content, schema, streaming, throughput) |
 | `results/` | Timestamped benchmark and test results |
