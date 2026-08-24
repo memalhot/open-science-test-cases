@@ -1,0 +1,12 @@
+# Edge-terminated route -> uses the router's default cert, no cert management
+# needed. Fine for a dev/test endpoint. (No auth yet; add Authorino later if
+# this ever needs to be exposed for real.)
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: gemma4-vllm
+  labels: { app: gemma4-vllm }
+spec:
+  to: { kind: Service, name: gemma4-vllm }
+  port: { targetPort: http }
+  tls: { termination: edge }
