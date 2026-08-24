@@ -1,0 +1,24 @@
+# Negative Tests
+
+```
+--- Running pod terminates within 60s of deletion ---
+pod/neg-test-teardown created
+pod "neg-test-teardown" deleted
+PASS
+  terminated in ~0s
+
+=== Namespace Health ===
+
+--- No pods stuck in Terminating > 5 minutes ---
+PASS
+
+--- No pods stuck Pending > 10 minutes ---
+PASS
+
+=========================================
+  Results: 7 passed, 0 failed
+=========================================
+
+=== Cleaning up test resources ===
+```
+
