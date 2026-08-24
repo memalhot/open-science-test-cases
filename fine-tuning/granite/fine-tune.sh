@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT=mm-test
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CREDENTIALS="${SCRIPT_DIR}/../model-serving/granite-model/credentials.env"
+CREDENTIALS="${SCRIPT_DIR}/../../model-serving/granite-model/credentials.env"
 
 if [[ ! -f "${CREDENTIALS}" ]]; then
   echo "Error: credentials.env not found at ${CREDENTIALS}" >&2
@@ -41,7 +41,7 @@ echo ""
 
 # Clean up any previous run with the same name
 echo "Cleaning up previous job (if any)..."
-oc delete pytorchjob "${JOB_NAME}" --ignore-not-found --as system:admin
+oc delete job "${JOB_NAME}" --ignore-not-found --as system:admin
 oc delete configmap "${JOB_NAME}-script" --ignore-not-found --as system:admin
 sleep 2
 
@@ -61,28 +61,35 @@ oc process -f "${SCRIPT_DIR}/fine-tune-job.yaml" \
 
 echo ""
 echo "Job submitted. Monitor with:"
-echo "  oc get pytorchjob ${JOB_NAME}"
-echo "  oc logs -f ${JOB_NAME}-master-0"
+echo "  oc get job ${JOB_NAME}"
+echo "  oc logs -f job/${JOB_NAME}"
 echo ""
 
 # Wait for the job pod to appear
 echo "Waiting for training pod to start..."
 MAX_ATTEMPTS=90
 POLL_INTERVAL=60
+POD_NAME=""
 for (( i=1; i<=MAX_ATTEMPTS; i++ )); do
-  POD_STATUS=$(oc get pod "${JOB_NAME}-master-0" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+  POD_NAME=$(oc get pods -l job-name="${JOB_NAME}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+  if [[ -z "${POD_NAME}" ]]; then
+    echo "  Attempt ${i}/${MAX_ATTEMPTS}: pod not yet created, retrying in ${POLL_INTERVAL}s..."
+    sleep "${POLL_INTERVAL}"
+    continue
+  fi
+  POD_STATUS=$(oc get pod "${POD_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
   if [[ "${POD_STATUS}" == "Running" ]]; then
     echo "Training pod is running."
     echo "Streaming logs (Ctrl+C to detach — job continues in cluster):"
     echo ""
-    oc logs -f "${JOB_NAME}-master-0" || true
+    oc logs -f "${POD_NAME}" || true
     break
   elif [[ "${POD_STATUS}" == "Succeeded" ]]; then
     echo "Training already completed."
     break
   elif [[ "${POD_STATUS}" == "Failed" ]]; then
     echo "Error: training pod failed" >&2
-    oc logs "${JOB_NAME}-master-0" 2>/dev/null || true
+    oc logs "${POD_NAME}" 2>/dev/null || true
     exit 1
   fi
   echo "  Attempt ${i}/${MAX_ATTEMPTS}: pod status='${POD_STATUS:-Pending}', retrying in ${POLL_INTERVAL}s..."
@@ -90,11 +97,11 @@ for (( i=1; i<=MAX_ATTEMPTS; i++ )); do
 done
 
 # Check final status
-JOB_STATUS=$(oc get pytorchjob "${JOB_NAME}" -o jsonpath='{.status.conditions[-1:].type}' 2>/dev/null || echo "Unknown")
+JOB_STATUS=$(oc get job "${JOB_NAME}" -o jsonpath='{.status.conditions[0].type}' 2>/dev/null || echo "Unknown")
 echo ""
 echo "Final job status: ${JOB_STATUS}"
 
-if [[ "${JOB_STATUS}" == "Succeeded" ]]; then
+if [[ "${JOB_STATUS}" == "Complete" ]]; then
   echo ""
   echo "Fine-tuning complete!"
   echo "Adapter saved to: s3://${OUTPUT_PATH}"

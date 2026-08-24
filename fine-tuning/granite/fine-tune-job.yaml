@@ -203,98 +203,96 @@ objects:
 
         print("Fine-tuning complete. Adapter uploaded to MinIO.")
 
-  - apiVersion: kubeflow.org/v1
-    kind: PyTorchJob
+  - apiVersion: batch/v1
+    kind: Job
     metadata:
       name: ${JOB_NAME}
       labels:
         opendatahub.io/dashboard: "true"
     spec:
-      pytorchReplicaSpecs:
-        Master:
-          replicas: 1
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: ${JOB_NAME}
+        spec:
           restartPolicy: OnFailure
-          template:
-            metadata:
-              labels:
-                app: ${JOB_NAME}
-            spec:
-              tolerations:
-                - effect: NoSchedule
-                  key: nvidia.com/gpu
-                  operator: Exists
-              containers:
-                - name: pytorch
-                  image: quay.io/memalhot/granite-fine-tune:latest
-                  command:
-                    - /bin/bash
-                    - -c
-                    - |
-                      python /scripts/fine-tune.py
-                  env:
-                    - name: AWS_ACCESS_KEY_ID
-                      valueFrom:
-                        secretKeyRef:
-                          name: minio-data-connection
-                          key: AWS_ACCESS_KEY_ID
-                    - name: AWS_SECRET_ACCESS_KEY
-                      valueFrom:
-                        secretKeyRef:
-                          name: minio-data-connection
-                          key: AWS_SECRET_ACCESS_KEY
-                    - name: AWS_S3_ENDPOINT
-                      valueFrom:
-                        secretKeyRef:
-                          name: minio-data-connection
-                          key: AWS_S3_ENDPOINT
-                    - name: AWS_S3_BUCKET
-                      valueFrom:
-                        secretKeyRef:
-                          name: minio-data-connection
-                          key: AWS_S3_BUCKET
-                    - name: BASE_MODEL_PATH
-                      value: ${BASE_MODEL_PATH}
-                    - name: OUTPUT_PATH
-                      value: ${OUTPUT_PATH}
-                    - name: DATASET_NAME
-                      value: ${DATASET_NAME}
-                    - name: NUM_EPOCHS
-                      value: ${NUM_EPOCHS}
-                    - name: LEARNING_RATE
-                      value: ${LEARNING_RATE}
-                    - name: BATCH_SIZE
-                      value: ${BATCH_SIZE}
-                    - name: LORA_RANK
-                      value: ${LORA_RANK}
-                    - name: MAX_SEQ_LENGTH
-                      value: ${MAX_SEQ_LENGTH}
-                    - name: HF_HOME
-                      value: /tmp/hf_home
-                    - name: TRANSFORMERS_CACHE
-                      value: /tmp/hf_home
-                    - name: PIP_TARGET
-                      value: /tmp/pip-packages
-                    - name: PYTHONPATH
-                      value: /tmp/pip-packages
-                  resources:
-                    requests:
-                      cpu: "4"
-                      memory: 24Gi
-                      nvidia.com/gpu: ${GPU_COUNT}
-                    limits:
-                      cpu: "8"
-                      memory: 48Gi
-                      nvidia.com/gpu: ${GPU_COUNT}
-                  volumeMounts:
-                    - name: scripts
-                      mountPath: /scripts
-                    - name: shm
-                      mountPath: /dev/shm
-              volumes:
+          tolerations:
+            - effect: NoSchedule
+              key: nvidia.com/gpu
+              operator: Exists
+          containers:
+            - name: pytorch
+              image: quay.io/memalhot/granite-fine-tune:latest
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  python /scripts/fine-tune.py
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: minio-data-connection
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: minio-data-connection
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: AWS_S3_ENDPOINT
+                  valueFrom:
+                    secretKeyRef:
+                      name: minio-data-connection
+                      key: AWS_S3_ENDPOINT
+                - name: AWS_S3_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: minio-data-connection
+                      key: AWS_S3_BUCKET
+                - name: BASE_MODEL_PATH
+                  value: ${BASE_MODEL_PATH}
+                - name: OUTPUT_PATH
+                  value: ${OUTPUT_PATH}
+                - name: DATASET_NAME
+                  value: ${DATASET_NAME}
+                - name: NUM_EPOCHS
+                  value: ${NUM_EPOCHS}
+                - name: LEARNING_RATE
+                  value: ${LEARNING_RATE}
+                - name: BATCH_SIZE
+                  value: ${BATCH_SIZE}
+                - name: LORA_RANK
+                  value: ${LORA_RANK}
+                - name: MAX_SEQ_LENGTH
+                  value: ${MAX_SEQ_LENGTH}
+                - name: HF_HOME
+                  value: /tmp/hf_home
+                - name: TRANSFORMERS_CACHE
+                  value: /tmp/hf_home
+                - name: PIP_TARGET
+                  value: /tmp/pip-packages
+                - name: PYTHONPATH
+                  value: /tmp/pip-packages
+              resources:
+                requests:
+                  cpu: "4"
+                  memory: 24Gi
+                  nvidia.com/gpu: ${GPU_COUNT}
+                limits:
+                  cpu: "8"
+                  memory: 48Gi
+                  nvidia.com/gpu: ${GPU_COUNT}
+              volumeMounts:
                 - name: scripts
-                  configMap:
-                    name: ${JOB_NAME}-script
+                  mountPath: /scripts
                 - name: shm
-                  emptyDir:
-                    medium: Memory
-                    sizeLimit: 8Gi
+                  mountPath: /dev/shm
+          volumes:
+            - name: scripts
+              configMap:
+                name: ${JOB_NAME}-script
+            - name: shm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 8Gi
