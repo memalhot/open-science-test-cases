@@ -19,6 +19,103 @@ PASS
   Results: 7 passed, 0 failed
 =========================================
 
-=== Cleaning up test resources ===
 ```
 
+# operator and platform checks
+
+```
+=========================================
+  Operator & Platform Readiness Checks
+=========================================
+
+=== Operator Health ===
+
+--- Red Hat OpenShift AI: rhods-operator (redhat-ods-operator) ---
+PASS (Available)
+
+--- Node Feature Discovery: nfd-controller-manager (openshift-nfd) ---
+PASS (Available)
+
+--- NVIDIA GPU Operator: gpu-operator (nvidia-gpu-operator) ---
+PASS (Available)
+
+--- OpenShift Serverless: knative-openshift (openshift-serverless) ---
+PASS (Available)
+
+--- OpenShift Service Mesh: istio-operator (openshift-operators) ---
+PASS (Available)
+
+--- NVIDIA Network Operator: nvidia-network-operator-controller-manager (nvidia-network-operator) ---
+PASS (Available)
+
+=== Configuration & Component Readiness ===
+
+--- DataScienceCluster: phase ---
+PASS (phase: Ready)
+
+--- GPU ClusterPolicy: state ---
+PASS (state: ready)
+
+--- NFD Instance: Available ---
+PASS (Available: True)
+
+=== DataScienceCluster Components ===
+
+--- DSC Component: Dashboard (DashboardReady) ---
+PASS (DashboardReady: True)
+
+--- DSC Component: Workbenches (WorkbenchesReady) ---
+PASS (WorkbenchesReady: True)
+
+--- DSC Component: DataSciencePipelines (DataSciencePipelinesReady) ---
+PASS (DataSciencePipelinesReady: True)
+
+--- DSC Component: CodeFlare (CodeFlareReady) ---
+PASS (CodeFlareReady: True)
+
+--- DSC Component: KServe (KserveReady) ---
+PASS (KserveReady: True)
+
+--- DSC Component: Ray (RayReady) ---
+PASS (RayReady: True)
+
+--- DSC Component: TrustyAI (TrustyAIReady) ---
+PASS (TrustyAIReady: True)
+
+--- DSC Component: ModelMeshServing (ModelMeshServingReady) ---
+PASS (ModelMeshServingReady: True)
+
+--- DSC Component: Kueue (KueueReady) ---
+PASS (KueueReady: True)
+
+=== GPU Node Labels ===
+
+--- Node: moc-r4pcc02u05 ---
+  NFD label: present
+  nvidia.com/gpu.count=4
+PASS
+
+--- Node: moc-r4pcc02u09 ---
+  NFD label: present
+  nvidia.com/gpu.count=4
+PASS
+
+=== Required Pods ===
+
+--- NFD Worker (openshift-nfd, app=nfd-worker) ---
+PASS (5 pod(s) running)
+
+--- NVIDIA GPU Driver (nvidia-gpu-operator, app.kubernetes.io/component=nvidia-driver) ---
+PASS (2 pod(s) running)
+
+=== Networking ===
+
+--- Service Mesh (Istio) Control Plane ---
+PASS (data-science-smcp in istio-system, Ready: True)
+
+=========================================
+  Results: 22 passed, 0 failed
+=========================================
+
+
+```
