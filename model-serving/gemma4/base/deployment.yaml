@@ -16,6 +16,14 @@ spec:
     metadata:
       labels: { app: gemma4-vllm }
     spec:
+      # NFD stamps each GPU node with a NoSchedule taint keyed on the discovered
+      # GPU product (nvidia.com/gpu.product=<PRODUCT>:NoSchedule) — H100 today,
+      # A100/V100 if added later. Tolerate the key regardless of value so the pod
+      # can land on any GPU node; GPU selection is driven by the resource request.
+      tolerations:
+        - key: nvidia.com/gpu.product
+          operator: Exists
+          effect: NoSchedule
       containers:
         - name: vllm
           # Dedicated Gemma-4 tag: bundles transformers>=5.5.0 (required for the
