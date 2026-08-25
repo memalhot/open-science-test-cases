@@ -114,7 +114,7 @@ PASS (2 pod(s) running)
 PASS (data-science-smcp in istio-system, Ready: True)
 
 =========================================
-  Results: 22 passed, 0 failed
+  Results: 23 passed, 0 failed
 =========================================
 
 
