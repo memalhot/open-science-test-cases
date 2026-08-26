@@ -1,0 +1,31 @@
+# Assisted by Claude Opus 4.6
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ginkgo-builder
+  namespace: uat-project
+  labels:
+    app.kubernetes.io/managed-by: uat-generator
+spec:
+  tolerations:
+    - key: nvidia.com/gpu.product
+      operator: Exists
+      effect: NoSchedule
+  containers:
+    - name: ginkgo-builder
+      image: golang:1.26
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: workspace
+          mountPath: /uat_workspace
+          subPath: uat/results/manual-run/binaries
+        - name: source
+          mountPath: /src
+  volumes:
+    - name: workspace
+      persistentVolumeClaim:
+        claimName: uat-project-storage
+    - name: source
+      configMap:
+        name: uat-test-source
+  restartPolicy: Never

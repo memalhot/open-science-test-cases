@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+  <testsuites tests="8" disabled="4" errors="0" failures="0" time="0.614124833">
+      <testsuite name="Chunked Prefill Suite (all-GPU TP)" package="/" tests="8" disabled="0" skipped="4" errors="0" failures="0" time="0.614124833" timestamp="2026-08-25T20:39:56">
+          <properties>
+              <property name="SuiteSucceeded" value="true"></property>
+              <property name="SuiteHasProgrammaticFocus" value="false"></property>
+              <property name="SpecialSuiteFailureReason" value=""></property>
+              <property name="SuiteLabels" value="[]"></property>
+              <property name="SuiteSemVerConstraints" value="[]"></property>
+              <property name="SuiteComponentSemVerConstraints" value="[]"></property>
+              <property name="RandomSeed" value="1787690396"></property>
+              <property name="RandomizeAllSpecs" value="false"></property>
+              <property name="LabelFilter" value="pass-fail"></property>
+              <property name="SemVerFilter" value=""></property>
+              <property name="FocusStrings" value=""></property>
+              <property name="SkipStrings" value=""></property>
+              <property name="FocusFiles" value=""></property>
+              <property name="SkipFiles" value=""></property>
+              <property name="FailOnPending" value="false"></property>
+              <property name="FailOnEmpty" value="false"></property>
+              <property name="FailFast" value="false"></property>
+              <property name="FlakeAttempts" value="0"></property>
+              <property name="DryRun" value="false"></property>
+              <property name="ParallelTotal" value="1"></property>
+              <property name="OutputInterceptorMode" value=""></property>
+          </properties>
+          <testcase name="[BeforeSuite]" classname="Chunked Prefill Suite (all-GPU TP)" status="passed" time="0.00027953">
+              <system-err>&gt; Enter [BeforeSuite] TOP-LEVEL - /uat_workspace/chunked-prefill/test_test.go:64 @ 08/25/26 20:39:56.532&#xA;Server:    http://svc-t8-chunked-prefill-moc-r4pcc02u09-vllm-server:8000&#xA;&lt; Exit [BeforeSuite] TOP-LEVEL - /uat_workspace/chunked-prefill/test_test.go:64 @ 08/25/26 20:39:56.533 (0s)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] Chunked Prefill vLLM Server should be healthy [pass-fail]" classname="Chunked Prefill Suite (all-GPU TP)" status="passed" time="0.024485774">
+              <system-err>&gt; Enter [It] should be healthy - /uat_workspace/chunked-prefill/test_test.go:126 @ 08/25/26 20:39:56.533&#xA;&lt; Exit [It] should be healthy - /uat_workspace/chunked-prefill/test_test.go:126 @ 08/25/26 20:39:56.557 (24ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] Chunked Prefill vLLM Server should have model loaded [pass-fail]" classname="Chunked Prefill Suite (all-GPU TP)" status="passed" time="0.002851982">
+              <system-err>&gt; Enter [It] should have model loaded - /uat_workspace/chunked-prefill/test_test.go:130 @ 08/25/26 20:39:56.557&#xA;&lt; Exit [It] should have model loaded - /uat_workspace/chunked-prefill/test_test.go:130 @ 08/25/26 20:39:56.56 (3ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] Chunked Prefill vLLM Server should serve inference requests [pass-fail]" classname="Chunked Prefill Suite (all-GPU TP)" status="passed" time="0.585960727">
+              <system-err>&gt; Enter [It] should serve inference requests - /uat_workspace/chunked-prefill/test_test.go:133 @ 08/25/26 20:39:56.56&#xA;&lt; Exit [It] should serve inference requests - /uat_workspace/chunked-prefill/test_test.go:133 @ 08/25/26 20:39:57.146 (586ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] Chunked Prefill Stress Test Server Health should be reachable [quantitative]" classname="Chunked Prefill Suite (all-GPU TP)" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+          <testcase name="[It] Chunked Prefill Stress Test Stress Test should execute stress test successfully [quantitative]" classname="Chunked Prefill Suite (all-GPU TP)" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+          <testcase name="[It] Chunked Prefill Stress Test Stress Test should generate result files [quantitative]" classname="Chunked Prefill Suite (all-GPU TP)" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+          <testcase name="[It] Chunked Prefill Stress Test Stress Test should report stress test results [quantitative]" classname="Chunked Prefill Suite (all-GPU TP)" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+      </testsuite>
+  </testsuites>

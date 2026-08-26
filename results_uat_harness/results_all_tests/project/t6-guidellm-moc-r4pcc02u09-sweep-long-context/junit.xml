@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+  <testsuites tests="6" disabled="2" errors="0" failures="0" time="81.77428728">
+      <testsuite name="guidellm Benchmark Suite" package="/home/guidellm" tests="6" disabled="0" skipped="2" errors="0" failures="0" time="81.77428728" timestamp="2026-08-25T20:20:41">
+          <properties>
+              <property name="SuiteSucceeded" value="true"></property>
+              <property name="SuiteHasProgrammaticFocus" value="false"></property>
+              <property name="SpecialSuiteFailureReason" value=""></property>
+              <property name="SuiteLabels" value="[]"></property>
+              <property name="SuiteSemVerConstraints" value="[]"></property>
+              <property name="SuiteComponentSemVerConstraints" value="[]"></property>
+              <property name="RandomSeed" value="1787689241"></property>
+              <property name="RandomizeAllSpecs" value="false"></property>
+              <property name="LabelFilter" value="quantitative"></property>
+              <property name="SemVerFilter" value=""></property>
+              <property name="FocusStrings" value=""></property>
+              <property name="SkipStrings" value=""></property>
+              <property name="FocusFiles" value=""></property>
+              <property name="SkipFiles" value=""></property>
+              <property name="FailOnPending" value="false"></property>
+              <property name="FailOnEmpty" value="false"></property>
+              <property name="FailFast" value="false"></property>
+              <property name="FlakeAttempts" value="0"></property>
+              <property name="DryRun" value="false"></property>
+              <property name="ParallelTotal" value="1"></property>
+              <property name="OutputInterceptorMode" value=""></property>
+          </properties>
+          <testcase name="[BeforeSuite]" classname="guidellm Benchmark Suite" status="passed" time="0.000128034">
+              <system-err>&gt; Enter [BeforeSuite] TOP-LEVEL - /uat_workspace/guidellm/test_test.go:51 @ 08/25/26 20:20:41.279&#xA;Server: http://svc-t6-guidellm-moc-r4pcc02u09-vllm-server:8000&#xA;Results: /uat_workspace&#xA;&lt; Exit [BeforeSuite] TOP-LEVEL - /uat_workspace/guidellm/test_test.go:51 @ 08/25/26 20:20:41.279 (0s)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] vLLM Inference Server Health Check should return healthy status [pass-fail]" classname="guidellm Benchmark Suite" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+          <testcase name="[It] vLLM Inference Server Model Endpoint should list available models [pass-fail]" classname="guidellm Benchmark Suite" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+          <testcase name="[It] vLLM Inference Server Benchmark Execution should execute benchmark successfully [quantitative]" classname="guidellm Benchmark Suite" status="passed" time="81.768347418">
+              <system-err>&gt; Enter [It] should execute benchmark successfully - /uat_workspace/guidellm/test_test.go:91 @ 08/25/26 20:20:41.279&#xA;&lt; Exit [It] should execute benchmark successfully - /uat_workspace/guidellm/test_test.go:91 @ 08/25/26 20:22:03.048 (1m21.768s)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] vLLM Inference Server Benchmark Execution should generate result files [quantitative]" classname="guidellm Benchmark Suite" status="passed" time="0.001599677">
+              <system-err>&gt; Enter [It] should generate result files - /uat_workspace/guidellm/test_test.go:112 @ 08/25/26 20:22:03.048&#xA;&lt; Exit [It] should generate result files - /uat_workspace/guidellm/test_test.go:112 @ 08/25/26 20:22:03.049 (2ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] vLLM Inference Server Benchmark Execution should collect benchmark results [quantitative]" classname="guidellm Benchmark Suite" status="passed" time="0.00366087">
+              <system-err>&gt; Enter [It] should collect benchmark results - /uat_workspace/guidellm/test_test.go:118 @ 08/25/26 20:22:03.049&#xA;=== Benchmark Results ===&#xA;Throughput (tok/s): mean=135.32 median=137.20 min=25.01 max=274.41&#xA;Latency (s):        mean=3.7878 median=3.7846 min=3.7790 max=3.8083&#xA;throughput_mean_tok_s - /uat_workspace/guidellm/test_test.go:137 @ 08/25/26 20:22:03.053&#xA;  135.32308128733104&#xA;throughput_median_tok_s - /uat_workspace/guidellm/test_test.go:138 @ 08/25/26 20:22:03.053&#xA;  137.2033238795529&#xA;latency_mean_s - /uat_workspace/guidellm/test_test.go:139 @ 08/25/26 20:22:03.053&#xA;  3.7878476083278656&#xA;latency_median_s - /uat_workspace/guidellm/test_test.go:140 @ 08/25/26 20:22:03.053&#xA;  3.7846360206604004&#xA;&lt; Exit [It] should collect benchmark results - /uat_workspace/guidellm/test_test.go:118 @ 08/25/26 20:22:03.053 (4ms)&#xA;</system-err>
+          </testcase>
+      </testsuite>
+  </testsuites>

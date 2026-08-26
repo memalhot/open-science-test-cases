@@ -1,0 +1,371 @@
+{
+  "status": "failed",
+  "totals": {
+    "tests": 307,
+    "failures": 7,
+    "errors": 1,
+    "skipped": 81
+  },
+  "entries": [
+    {
+      "name": "t1-platform-check-checker",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t10-ping-project-check",
+      "tests": 7,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 3,
+      "status": "failed"
+    },
+    {
+      "name": "t11-peer-load-high-moc-r4pcc02u05-sweep-constant-high",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t11-peer-load-high-moc-r4pcc02u05-sweep-constant-low",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t11-peer-load-high-moc-r4pcc02u05-sweep-poisson-burst",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t11-peer-load-high-moc-r4pcc02u09-sweep-constant-high",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t11-peer-load-high-moc-r4pcc02u09-sweep-constant-low",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t11-peer-load-high-moc-r4pcc02u09-sweep-poisson-burst",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t12-peer-load-low-moc-r4pcc02u05-sweep-constant-high",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t12-peer-load-low-moc-r4pcc02u05-sweep-constant-low",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t12-peer-load-low-moc-r4pcc02u05-sweep-poisson-burst",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t12-peer-load-low-moc-r4pcc02u09-sweep-constant-high",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t12-peer-load-low-moc-r4pcc02u09-sweep-constant-low",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t12-peer-load-low-moc-r4pcc02u09-sweep-poisson-burst",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t2-component-moc-r4pcc02u05-test-runner",
+      "tests": 22,
+      "failures": 4,
+      "errors": 0,
+      "skipped": 1,
+      "status": "failed"
+    },
+    {
+      "name": "t2-component-moc-r4pcc02u09-test-runner",
+      "tests": 22,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 1,
+      "status": "failed"
+    },
+    {
+      "name": "t3-iperf3-set0-iperf-client",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t3-iperf3-set1-iperf-client",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t4-dev-env-moc-r4pcc02u05-validator",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t4-dev-env-moc-r4pcc02u09-validator",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed"
+    },
+    {
+      "name": "t5-kserve-test-runner",
+      "tests": 4,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 2,
+      "status": "failed"
+    },
+    {
+      "name": "t6-guidellm-moc-r4pcc02u05-pass-fail",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 3,
+      "status": "passed"
+    },
+    {
+      "name": "t6-guidellm-moc-r4pcc02u05-sweep-long-context",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "status": "passed"
+    },
+    {
+      "name": "t6-guidellm-moc-r4pcc02u05-sweep-short-burst",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "status": "passed"
+    },
+    {
+      "name": "t6-guidellm-moc-r4pcc02u05-sweep-sustained-load",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "status": "passed"
+    },
+    {
+      "name": "t6-guidellm-moc-r4pcc02u09-pass-fail",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 3,
+      "status": "passed"
+    },
+    {
+      "name": "t6-guidellm-moc-r4pcc02u09-sweep-long-context",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "status": "passed"
+    },
+    {
+      "name": "t6-guidellm-moc-r4pcc02u09-sweep-short-burst",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "status": "passed"
+    },
+    {
+      "name": "t6-guidellm-moc-r4pcc02u09-sweep-sustained-load",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "status": "passed"
+    },
+    {
+      "name": "t7-inference-perf-moc-r4pcc02u05-pass-fail",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 3,
+      "status": "passed"
+    },
+    {
+      "name": "t7-inference-perf-moc-r4pcc02u05-sweep-constant-high",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "status": "passed"
+    },
+    {
+      "name": "t7-inference-perf-moc-r4pcc02u05-sweep-constant-low",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "status": "passed"
+    },
+    {
+      "name": "t7-inference-perf-moc-r4pcc02u05-sweep-poisson-burst",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "status": "passed"
+    },
+    {
+      "name": "t7-inference-perf-moc-r4pcc02u09-pass-fail",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 3,
+      "status": "passed"
+    },
+    {
+      "name": "t7-inference-perf-moc-r4pcc02u09-sweep-constant-high",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "status": "passed"
+    },
+    {
+      "name": "t7-inference-perf-moc-r4pcc02u09-sweep-constant-low",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "status": "passed"
+    },
+    {
+      "name": "t7-inference-perf-moc-r4pcc02u09-sweep-poisson-burst",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "status": "passed"
+    },
+    {
+      "name": "t8-chunked-prefill-moc-r4pcc02u05-pass-fail",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 4,
+      "status": "passed"
+    },
+    {
+      "name": "t8-chunked-prefill-moc-r4pcc02u05-sweep-stress",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 3,
+      "status": "passed"
+    },
+    {
+      "name": "t8-chunked-prefill-moc-r4pcc02u09-pass-fail",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 4,
+      "status": "passed"
+    },
+    {
+      "name": "t8-chunked-prefill-moc-r4pcc02u09-sweep-stress",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 3,
+      "status": "passed"
+    },
+    {
+      "name": "t9-llm-d-local-moc-r4pcc02u05-pass-fail",
+      "tests": 13,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 4,
+      "status": "passed"
+    },
+    {
+      "name": "t9-llm-d-local-moc-r4pcc02u05-sweep-stress",
+      "tests": 13,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 8,
+      "status": "passed"
+    },
+    {
+      "name": "t9-llm-d-local-moc-r4pcc02u09-pass-fail",
+      "tests": 13,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 4,
+      "status": "passed"
+    },
+    {
+      "name": "t9-llm-d-local-moc-r4pcc02u09-sweep-stress",
+      "tests": 13,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 8,
+      "status": "passed"
+    }
+  ]
+}

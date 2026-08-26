@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+  <testsuites tests="13" disabled="4" errors="0" failures="0" time="0.968974801">
+      <testsuite name="llm-d Colocated P/D Suite (NVLink/cuda_ipc)" package="/" tests="13" disabled="0" skipped="4" errors="0" failures="0" time="0.968974801" timestamp="2026-08-25T22:01:43">
+          <properties>
+              <property name="SuiteSucceeded" value="true"></property>
+              <property name="SuiteHasProgrammaticFocus" value="false"></property>
+              <property name="SpecialSuiteFailureReason" value=""></property>
+              <property name="SuiteLabels" value="[]"></property>
+              <property name="SuiteSemVerConstraints" value="[]"></property>
+              <property name="SuiteComponentSemVerConstraints" value="[]"></property>
+              <property name="RandomSeed" value="1787695303"></property>
+              <property name="RandomizeAllSpecs" value="false"></property>
+              <property name="LabelFilter" value="pass-fail"></property>
+              <property name="SemVerFilter" value=""></property>
+              <property name="FocusStrings" value=""></property>
+              <property name="SkipStrings" value=""></property>
+              <property name="FocusFiles" value=""></property>
+              <property name="SkipFiles" value=""></property>
+              <property name="FailOnPending" value="false"></property>
+              <property name="FailOnEmpty" value="false"></property>
+              <property name="FailFast" value="false"></property>
+              <property name="FlakeAttempts" value="0"></property>
+              <property name="DryRun" value="false"></property>
+              <property name="ParallelTotal" value="1"></property>
+              <property name="OutputInterceptorMode" value=""></property>
+          </properties>
+          <testcase name="[BeforeSuite]" classname="llm-d Colocated P/D Suite (NVLink/cuda_ipc)" status="passed" time="0.000146125">
+              <system-err>&gt; Enter [BeforeSuite] TOP-LEVEL - /uat_workspace/llm-d-local/test_test.go:69 @ 08/25/26 22:01:43.708&#xA;Prefill:   http://svc-t9-llm-d-local-moc-r4pcc02u09-pd-server:8100 (TP=2)&#xA;Decode:    http://svc-t9-llm-d-local-moc-r4pcc02u09-pd-server:8200 (TP=2)&#xA;Gateway:   http://svc-t9-llm-d-local-moc-r4pcc02u09-pd-server:8080 [nginx header-injector]&#xA;&lt; Exit [BeforeSuite] TOP-LEVEL - /uat_workspace/llm-d-local/test_test.go:69 @ 08/25/26 22:01:43.708 (0s)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] llm-d Colocated P/D Prefill Server should be healthy [pass-fail]" classname="llm-d Colocated P/D Suite (NVLink/cuda_ipc)" status="passed" time="0.021431054">
+              <system-err>&gt; Enter [It] should be healthy - /uat_workspace/llm-d-local/test_test.go:145 @ 08/25/26 22:01:43.709&#xA;&lt; Exit [It] should be healthy - /uat_workspace/llm-d-local/test_test.go:145 @ 08/25/26 22:01:43.73 (21ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] llm-d Colocated P/D Prefill Server should have model loaded [pass-fail]" classname="llm-d Colocated P/D Suite (NVLink/cuda_ipc)" status="passed" time="0.00307123">
+              <system-err>&gt; Enter [It] should have model loaded - /uat_workspace/llm-d-local/test_test.go:149 @ 08/25/26 22:01:43.73&#xA;&lt; Exit [It] should have model loaded - /uat_workspace/llm-d-local/test_test.go:149 @ 08/25/26 22:01:43.733 (3ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] llm-d Colocated P/D Prefill Server should serve inference requests [pass-fail]" classname="llm-d Colocated P/D Suite (NVLink/cuda_ipc)" status="passed" time="0.596481755">
+              <system-err>&gt; Enter [It] should serve inference requests - /uat_workspace/llm-d-local/test_test.go:152 @ 08/25/26 22:01:43.733&#xA;&lt; Exit [It] should serve inference requests - /uat_workspace/llm-d-local/test_test.go:152 @ 08/25/26 22:01:44.33 (596ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] llm-d Colocated P/D Decode Server should be healthy [pass-fail]" classname="llm-d Colocated P/D Suite (NVLink/cuda_ipc)" status="passed" time="0.008853846">
+              <system-err>&gt; Enter [It] should be healthy - /uat_workspace/llm-d-local/test_test.go:158 @ 08/25/26 22:01:44.33&#xA;&lt; Exit [It] should be healthy - /uat_workspace/llm-d-local/test_test.go:158 @ 08/25/26 22:01:44.339 (9ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] llm-d Colocated P/D Decode Server should have model loaded [pass-fail]" classname="llm-d Colocated P/D Suite (NVLink/cuda_ipc)" status="passed" time="0.002097645">
+              <system-err>&gt; Enter [It] should have model loaded - /uat_workspace/llm-d-local/test_test.go:162 @ 08/25/26 22:01:44.339&#xA;&lt; Exit [It] should have model loaded - /uat_workspace/llm-d-local/test_test.go:162 @ 08/25/26 22:01:44.341 (2ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] llm-d Colocated P/D Decode Server should serve inference requests [pass-fail]" classname="llm-d Colocated P/D Suite (NVLink/cuda_ipc)" status="passed" time="0.087109157">
+              <system-err>&gt; Enter [It] should serve inference requests - /uat_workspace/llm-d-local/test_test.go:165 @ 08/25/26 22:01:44.341&#xA;&lt; Exit [It] should serve inference requests - /uat_workspace/llm-d-local/test_test.go:165 @ 08/25/26 22:01:44.428 (87ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] llm-d Colocated P/D Gateway (nginx header-injector → sidecar → P/D) should route disaggregated inference [pass-fail]" classname="llm-d Colocated P/D Suite (NVLink/cuda_ipc)" status="passed" time="0.248224314">
+              <system-err>&gt; Enter [It] should route disaggregated inference - /uat_workspace/llm-d-local/test_test.go:171 @ 08/25/26 22:01:44.428&#xA;&lt; Exit [It] should route disaggregated inference - /uat_workspace/llm-d-local/test_test.go:171 @ 08/25/26 22:01:44.676 (248ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] llm-d Colocated P/D GPU Configuration should report split [pass-fail]" classname="llm-d Colocated P/D Suite (NVLink/cuda_ipc)" status="passed" time="0.000108474">
+              <system-err>&gt; Enter [It] should report split - /uat_workspace/llm-d-local/test_test.go:178 @ 08/25/26 22:01:44.677&#xA;=== GPU Split ===&#xA;Prefill: TP=2 (2 GPUs)&#xA;Decode:  TP=2 (2 GPUs)&#xA;prefill_tp - /uat_workspace/llm-d-local/test_test.go:183 @ 08/25/26 22:01:44.677&#xA;  2&#xA;decode_tp - /uat_workspace/llm-d-local/test_test.go:184 @ 08/25/26 22:01:44.677&#xA;  2&#xA;&lt; Exit [It] should report split - /uat_workspace/llm-d-local/test_test.go:178 @ 08/25/26 22:01:44.677 (0s)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] llm-d NVLink Stress Test Gateway Health should be reachable through nginx gateway [quantitative]" classname="llm-d Colocated P/D Suite (NVLink/cuda_ipc)" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+          <testcase name="[It] llm-d NVLink Stress Test NVLink Bandwidth Stress should execute stress test successfully [quantitative]" classname="llm-d Colocated P/D Suite (NVLink/cuda_ipc)" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+          <testcase name="[It] llm-d NVLink Stress Test NVLink Bandwidth Stress should generate result files [quantitative]" classname="llm-d Colocated P/D Suite (NVLink/cuda_ipc)" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+          <testcase name="[It] llm-d NVLink Stress Test NVLink Bandwidth Stress should report stress test results [quantitative]" classname="llm-d Colocated P/D Suite (NVLink/cuda_ipc)" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+      </testsuite>
+  </testsuites>
