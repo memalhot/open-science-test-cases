@@ -23,7 +23,7 @@ Before any of the inference, UI, or fine tuning tests can be run, the model must
 
 Harness run against the oac-prod cluster. Two GPU nodes: `moc-r4pcc02u05` (u05) and `moc-r4pcc02u09` (u09), each 4x H100 SXM (NV6, all-to-all NVLink). Scopes: project (single namespace), node (one pod per GPU node), multi-tenancy (project + peer).
 
-Raw artifacts: [`results_uat_harness/results_all_tests/`](results_uat_harness/results_all_tests/). Runtime and GPU-minutes: [`results_uat_harness/tracking/usage.md`](results_uat_harness/tracking/usage.md). Per-test design and assertions: [`test_lib/README.md`](../../test_lib/README.md).
+Raw artifacts: [`results_uat_harness/results_all_tests/`](results_uat_harness/results_all_tests/). Runtime and GPU-minutes: [`results_uat_harness/tracking/usage.md`](results_uat_harness/tracking/usage.md). 
 
 Type = pass-fail (asserts conditions) or quant (records measurements). Each subtest is its own row. Pass-fail tests with sub-checks (platform-check, component, dev-env, ping) are broken out in [Check detail](#check-detail). Throughput is total tokens/s (input + output) except guidellm, which reports output tokens/s.
 
