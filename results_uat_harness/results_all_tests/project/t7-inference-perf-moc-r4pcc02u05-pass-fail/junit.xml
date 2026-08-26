@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+  <testsuites tests="6" disabled="3" errors="0" failures="0" time="0.014693067">
+      <testsuite name="inference-perf Benchmark Suite" package="/workspace" tests="6" disabled="0" skipped="3" errors="0" failures="0" time="0.014693067" timestamp="2026-08-25T20:19:34">
+          <properties>
+              <property name="SuiteSucceeded" value="true"></property>
+              <property name="SuiteHasProgrammaticFocus" value="false"></property>
+              <property name="SpecialSuiteFailureReason" value=""></property>
+              <property name="SuiteLabels" value="[]"></property>
+              <property name="SuiteSemVerConstraints" value="[]"></property>
+              <property name="SuiteComponentSemVerConstraints" value="[]"></property>
+              <property name="RandomSeed" value="1787689174"></property>
+              <property name="RandomizeAllSpecs" value="false"></property>
+              <property name="LabelFilter" value="pass-fail"></property>
+              <property name="SemVerFilter" value=""></property>
+              <property name="FocusStrings" value=""></property>
+              <property name="SkipStrings" value=""></property>
+              <property name="FocusFiles" value=""></property>
+              <property name="SkipFiles" value=""></property>
+              <property name="FailOnPending" value="false"></property>
+              <property name="FailOnEmpty" value="false"></property>
+              <property name="FailFast" value="false"></property>
+              <property name="FlakeAttempts" value="0"></property>
+              <property name="DryRun" value="false"></property>
+              <property name="ParallelTotal" value="1"></property>
+              <property name="OutputInterceptorMode" value=""></property>
+          </properties>
+          <testcase name="[BeforeSuite]" classname="inference-perf Benchmark Suite" status="passed" time="0.000146994">
+              <system-err>&gt; Enter [BeforeSuite] TOP-LEVEL - /uat_workspace/inference-perf/test_test.go:61 @ 08/25/26 20:19:34.472&#xA;Server: http://svc-t7-inference-perf-moc-r4pcc02u05-vllm-server:8000&#xA;Results: /uat_workspace&#xA;&lt; Exit [BeforeSuite] TOP-LEVEL - /uat_workspace/inference-perf/test_test.go:61 @ 08/25/26 20:19:34.472 (0s)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] inference-perf Health Check should return healthy status [pass-fail]" classname="inference-perf Benchmark Suite" status="passed" time="0.012143869">
+              <system-err>&gt; Enter [It] should return healthy status - /uat_workspace/inference-perf/test_test.go:75 @ 08/25/26 20:19:34.472&#xA;&lt; Exit [It] should return healthy status - /uat_workspace/inference-perf/test_test.go:75 @ 08/25/26 20:19:34.484 (12ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] inference-perf Model Endpoint should list available models [pass-fail]" classname="inference-perf Benchmark Suite" status="passed" time="0.002096383">
+              <system-err>&gt; Enter [It] should list available models - /uat_workspace/inference-perf/test_test.go:84 @ 08/25/26 20:19:34.484&#xA;&lt; Exit [It] should list available models - /uat_workspace/inference-perf/test_test.go:84 @ 08/25/26 20:19:34.486 (2ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] inference-perf Benchmark Execution should execute benchmark successfully [quantitative]" classname="inference-perf Benchmark Suite" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+          <testcase name="[It] inference-perf Benchmark Execution should generate result files [quantitative]" classname="inference-perf Benchmark Suite" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+          <testcase name="[It] inference-perf Benchmark Execution should collect benchmark results [quantitative]" classname="inference-perf Benchmark Suite" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+      </testsuite>
+  </testsuites>

@@ -1,0 +1,45 @@
+# Assisted by Claude Opus 4.6
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: t5-kserve-isvc
+  namespace: uat-project
+  labels:
+    app.kubernetes.io/managed-by: uat-generator
+    test: kserve
+spec:
+  predictor:
+    tolerations:
+      - key: nvidia.com/gpu.product
+        operator: Exists
+        effect: NoSchedule
+    containers:
+    - args:
+      - --model=/models/ibm-granite/granite-3.3-8b-instruct
+      - --port=8080
+      - --max-model-len=10000
+      - --gpu-memory-utilization=0.6
+      command:
+      - python
+      - -m
+      - vllm.entrypoints.openai.api_server
+      env:
+      - name: HOME
+        value: /tmp
+      image: nvcr.io/nvidia/vllm:26.03-py3
+      name: kserve-container
+      ports:
+      - containerPort: 8080
+        protocol: TCP
+      resources:
+        limits:
+          nvidia.com/gpu: '1'
+        requests:
+          nvidia.com/gpu: '1'
+      volumeMounts:
+      - mountPath: /models
+        name: models
+    volumes:
+    - name: models
+      persistentVolumeClaim:
+        claimName: uat-models

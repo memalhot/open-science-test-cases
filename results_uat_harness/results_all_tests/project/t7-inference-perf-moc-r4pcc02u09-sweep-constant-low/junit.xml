@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+  <testsuites tests="6" disabled="2" errors="0" failures="0" time="47.554478619">
+      <testsuite name="inference-perf Benchmark Suite" package="/workspace" tests="6" disabled="0" skipped="2" errors="0" failures="0" time="47.554478619" timestamp="2026-08-25T20:26:54">
+          <properties>
+              <property name="SuiteSucceeded" value="true"></property>
+              <property name="SuiteHasProgrammaticFocus" value="false"></property>
+              <property name="SpecialSuiteFailureReason" value=""></property>
+              <property name="SuiteLabels" value="[]"></property>
+              <property name="SuiteSemVerConstraints" value="[]"></property>
+              <property name="SuiteComponentSemVerConstraints" value="[]"></property>
+              <property name="RandomSeed" value="1787689614"></property>
+              <property name="RandomizeAllSpecs" value="false"></property>
+              <property name="LabelFilter" value="quantitative"></property>
+              <property name="SemVerFilter" value=""></property>
+              <property name="FocusStrings" value=""></property>
+              <property name="SkipStrings" value=""></property>
+              <property name="FocusFiles" value=""></property>
+              <property name="SkipFiles" value=""></property>
+              <property name="FailOnPending" value="false"></property>
+              <property name="FailOnEmpty" value="false"></property>
+              <property name="FailFast" value="false"></property>
+              <property name="FlakeAttempts" value="0"></property>
+              <property name="DryRun" value="false"></property>
+              <property name="ParallelTotal" value="1"></property>
+              <property name="OutputInterceptorMode" value=""></property>
+          </properties>
+          <testcase name="[BeforeSuite]" classname="inference-perf Benchmark Suite" status="passed" time="0.000240629">
+              <system-err>&gt; Enter [BeforeSuite] TOP-LEVEL - /uat_workspace/inference-perf/test_test.go:61 @ 08/25/26 20:26:54.518&#xA;Server: http://svc-t7-inference-perf-moc-r4pcc02u09-vllm-server:8000&#xA;Results: /uat_workspace&#xA;&lt; Exit [BeforeSuite] TOP-LEVEL - /uat_workspace/inference-perf/test_test.go:61 @ 08/25/26 20:26:54.518 (0s)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] inference-perf Health Check should return healthy status [pass-fail]" classname="inference-perf Benchmark Suite" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+          <testcase name="[It] inference-perf Model Endpoint should list available models [pass-fail]" classname="inference-perf Benchmark Suite" status="skipped" time="0">
+              <skipped message="skipped"></skipped>
+          </testcase>
+          <testcase name="[It] inference-perf Benchmark Execution should execute benchmark successfully [quantitative]" classname="inference-perf Benchmark Suite" status="passed" time="47.549917216">
+              <system-err>&gt; Enter [It] should execute benchmark successfully - /uat_workspace/inference-perf/test_test.go:101 @ 08/25/26 20:26:54.519&#xA;&lt; Exit [It] should execute benchmark successfully - /uat_workspace/inference-perf/test_test.go:101 @ 08/25/26 20:27:42.069 (47.55s)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] inference-perf Benchmark Execution should generate result files [quantitative]" classname="inference-perf Benchmark Suite" status="passed" time="0.002123145">
+              <system-err>&gt; Enter [It] should generate result files - /uat_workspace/inference-perf/test_test.go:121 @ 08/25/26 20:27:42.069&#xA;&lt; Exit [It] should generate result files - /uat_workspace/inference-perf/test_test.go:121 @ 08/25/26 20:27:42.071 (2ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] inference-perf Benchmark Execution should collect benchmark results [quantitative]" classname="inference-perf Benchmark Suite" status="passed" time="0.001414641">
+              <system-err>&gt; Enter [It] should collect benchmark results - /uat_workspace/inference-perf/test_test.go:127 @ 08/25/26 20:27:42.071&#xA;=== inference-perf Results ===&#xA;Successes: 30  Failures: 0&#xA;Throughput (tok/s): total=198.46 output=67.57 requests=1.0197&#xA;Request Latency (s): mean=0.4836 median=0.4990&#xA;TTFT (s): mean=0.0312 median=0.0274&#xA;ttft_mean_s - /uat_workspace/inference-perf/test_test.go:155 @ 08/25/26 20:27:42.072&#xA;  0.031155293826789904&#xA;TPOT (s): mean=0.0071 median=0.0072&#xA;tpot_mean_s - /uat_workspace/inference-perf/test_test.go:161 @ 08/25/26 20:27:42.072&#xA;  0.007084595655452164&#xA;throughput_total_tokens_per_sec - /uat_workspace/inference-perf/test_test.go:164 @ 08/25/26 20:27:42.072&#xA;  198.46392293350263&#xA;throughput_output_tokens_per_sec - /uat_workspace/inference-perf/test_test.go:165 @ 08/25/26 20:27:42.072&#xA;  67.57086466720384&#xA;request_latency_mean_s - /uat_workspace/inference-perf/test_test.go:166 @ 08/25/26 20:27:42.072&#xA;  0.4836066360294353&#xA;&lt; Exit [It] should collect benchmark results - /uat_workspace/inference-perf/test_test.go:127 @ 08/25/26 20:27:42.072 (1ms)&#xA;</system-err>
+          </testcase>
+      </testsuite>
+  </testsuites>

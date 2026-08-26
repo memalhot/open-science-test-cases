@@ -1,0 +1,147 @@
+# Assisted by Claude Opus 4.6
+apiVersion: v1
+kind: Pod
+metadata:
+  name: t9-llm-d-local-moc-r4pcc02u09-pd-server
+  namespace: uat-project
+  labels:
+    app.kubernetes.io/managed-by: uat-generator
+    test: llm-d-local
+    dag-step: pd-server
+    node: moc-r4pcc02u09
+spec:
+  tolerations:
+    - key: nvidia.com/gpu.product
+      operator: Exists
+      effect: NoSchedule
+  nodeSelector:
+    kubernetes.io/hostname: moc-r4pcc02u09
+  initContainers:
+    - name: routing-sidecar
+      image: ghcr.io/llm-d/llm-d-router-disagg-sidecar:v0.9.0
+      restartPolicy: Always
+      args:
+        - --port=8000
+        - --vllm-port=8200
+        - --kv-connector=nixlv2
+        - --secure-proxy=false
+      ports:
+        - containerPort: 8000
+          name: sidecar
+    - name: header-injector
+      image: docker.io/nginx:1.27-alpine
+      restartPolicy: Always
+      command:
+        - sh
+        - -c
+      args:
+        - "printf 'pid /tmp/nginx.pid; events{worker_connections 128;} http{client_body_temp_path /tmp/client_body; proxy_temp_path /tmp/proxy; fastcgi_temp_path /tmp/fastcgi; uwsgi_temp_path /tmp/uwsgi; scgi_temp_path /tmp/scgi; server{listen 8080; location /{ proxy_pass http://localhost:8000; proxy_set_header x-prefiller-host-port \"localhost:8100\"; proxy_set_header Host $host; proxy_buffering off; proxy_read_timeout 300s; proxy_http_version 1.1; chunked_transfer_encoding on; }}}' > /tmp/nginx.conf && exec nginx -c /tmp/nginx.conf -g 'daemon off;'"
+      ports:
+        - containerPort: 8080
+          name: http
+  containers:
+    - name: t9-llm-d-local-moc-r4pcc02u09-pd-server
+      image: ghcr.io/llm-d/llm-d-cuda:v0.8.0
+      command:
+        - sh
+        - -c
+        - "CUDA_VISIBLE_DEVICES=$PREFILL_GPUS VLLM_NIXL_SIDE_CHANNEL_PORT=5557 python -m vllm.entrypoints.openai.api_server --model=$MODEL --tensor-parallel-size=$PREFILL_TP --port=8100 --block-size=$BLOCK_SIZE --kv-transfer-config=\"$KV_TRANSFER_CONFIG\" & CUDA_VISIBLE_DEVICES=$DECODE_GPUS VLLM_NIXL_SIDE_CHANNEL_PORT=5558 python -m vllm.entrypoints.openai.api_server --model=$MODEL --tensor-parallel-size=$DECODE_TP --port=8200 --block-size=$BLOCK_SIZE --kv-transfer-config=\"$KV_TRANSFER_CONFIG\""
+      env:
+        - name: HOME
+          value: /tmp
+        - name: MODEL
+          value: /models/ibm-granite/granite-3.3-8b-instruct
+        - name: KV_TRANSFER_CONFIG
+          value: "{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"enable_cross_layers_blocks\":\"true\"}}"
+        - name: DECODE_TP
+          value: "2"
+        - name: PREFILL_TP
+          value: "2"
+        - name: DECODE_GPUS
+          value: "0,1"
+        - name: PREFILL_GPUS
+          value: "2,3"
+        - name: BLOCK_SIZE
+          value: "1024"
+        - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: UCX_TLS
+          value: "cuda_ipc,cuda_copy,sm,tcp"
+        - name: UCX_CUDA_IPC_CACHE
+          value: "yes"
+        - name: UCX_RNDV_PIPELINE_SHM_ENABLE
+          value: "no"
+        - name: CUDA_DEVICE_MAX_CONNECTIONS
+          value: "32"
+        - name: VLLM_LOGGING_LEVEL
+          value: INFO
+      ports:
+        - containerPort: 8200
+          name: vllm-decode
+        - containerPort: 8100
+          name: vllm-prefill
+      readinessProbe:
+        exec:
+          command:
+          - python
+          - -c
+          - import urllib.request; urllib.request.urlopen('http://localhost:8200/health');
+            urllib.request.urlopen('http://localhost:8100/health')
+        failureThreshold: 30
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        timeoutSeconds: 5
+      resources:
+        limits:
+          nvidia.com/gpu: '4'
+        requests:
+          nvidia.com/gpu: '4'
+      volumeMounts:
+        - name: workspace
+          mountPath: /uat_workspace
+          subPath: uat/results/manual-run/t9-llm-d-local-moc-r4pcc02u09-pd-server
+        - name: workspace
+          mountPath: /binaries
+          subPath: uat/results/manual-run/binaries
+        - name: models
+          mountPath: /models
+          readOnly: true
+        - mountPath: /dev/shm
+          name: dshm
+  volumes:
+    - name: workspace
+      persistentVolumeClaim:
+        claimName: uat-project-storage
+    - name: models
+      persistentVolumeClaim:
+        claimName: uat-models
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 16Gi
+      name: dshm
+  restartPolicy: Never
+
+---
+# Assisted by Claude Opus 4.6
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-t9-llm-d-local-moc-r4pcc02u09-pd-server
+  namespace: uat-project
+  labels:
+    app.kubernetes.io/managed-by: uat-generator
+    test: llm-d-local
+    dag-step: pd-server
+    node: moc-r4pcc02u09
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/managed-by: uat-generator
+    test: llm-d-local
+    dag-step: pd-server
+    node: moc-r4pcc02u09
+  ports:
+    - port: 8080
+      targetPort: 8080

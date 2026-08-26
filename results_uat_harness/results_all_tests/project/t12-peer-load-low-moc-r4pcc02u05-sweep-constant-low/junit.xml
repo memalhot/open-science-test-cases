@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+  <testsuites tests="4" disabled="0" errors="0" failures="0" time="41.815749796">
+      <testsuite name="Multi-Tenant Contention Benchmark Suite" package="/workspace" tests="4" disabled="0" skipped="0" errors="0" failures="0" time="41.815749796" timestamp="2026-08-25T22:11:30">
+          <properties>
+              <property name="SuiteSucceeded" value="true"></property>
+              <property name="SuiteHasProgrammaticFocus" value="false"></property>
+              <property name="SpecialSuiteFailureReason" value=""></property>
+              <property name="SuiteLabels" value="[]"></property>
+              <property name="SuiteSemVerConstraints" value="[]"></property>
+              <property name="SuiteComponentSemVerConstraints" value="[]"></property>
+              <property name="RandomSeed" value="1787695890"></property>
+              <property name="RandomizeAllSpecs" value="false"></property>
+              <property name="LabelFilter" value="quantitative"></property>
+              <property name="SemVerFilter" value=""></property>
+              <property name="FocusStrings" value=""></property>
+              <property name="SkipStrings" value=""></property>
+              <property name="FocusFiles" value=""></property>
+              <property name="SkipFiles" value=""></property>
+              <property name="FailOnPending" value="false"></property>
+              <property name="FailOnEmpty" value="false"></property>
+              <property name="FailFast" value="false"></property>
+              <property name="FlakeAttempts" value="0"></property>
+              <property name="DryRun" value="false"></property>
+              <property name="ParallelTotal" value="1"></property>
+              <property name="OutputInterceptorMode" value=""></property>
+          </properties>
+          <testcase name="[BeforeSuite]" classname="Multi-Tenant Contention Benchmark Suite" status="passed" time="0.000379503">
+              <system-err>&gt; Enter [BeforeSuite] TOP-LEVEL - /uat_workspace/peer-load-low/test_test.go:58 @ 08/25/26 22:11:30.009&#xA;Server: http://svc-t12-peer-load-low-moc-r4pcc02u05-project-server:8000&#xA;Results: /uat_workspace&#xA;&lt; Exit [BeforeSuite] TOP-LEVEL - /uat_workspace/peer-load-low/test_test.go:58 @ 08/25/26 22:11:30.009 (0s)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] peer-load-low Benchmark Under Contention should execute benchmark successfully [quantitative]" classname="Multi-Tenant Contention Benchmark Suite" status="passed" time="41.812889578">
+              <system-err>&gt; Enter [It] should execute benchmark successfully - /uat_workspace/peer-load-low/test_test.go:72 @ 08/25/26 22:11:30.009&#xA;&lt; Exit [It] should execute benchmark successfully - /uat_workspace/peer-load-low/test_test.go:72 @ 08/25/26 22:12:11.822 (41.813s)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] peer-load-low Benchmark Under Contention should generate result files [quantitative]" classname="Multi-Tenant Contention Benchmark Suite" status="passed" time="0.001191051">
+              <system-err>&gt; Enter [It] should generate result files - /uat_workspace/peer-load-low/test_test.go:92 @ 08/25/26 22:12:11.822&#xA;&lt; Exit [It] should generate result files - /uat_workspace/peer-load-low/test_test.go:92 @ 08/25/26 22:12:11.824 (1ms)&#xA;</system-err>
+          </testcase>
+          <testcase name="[It] peer-load-low Benchmark Under Contention should collect benchmark results [quantitative]" classname="Multi-Tenant Contention Benchmark Suite" status="passed" time="0.000809508">
+              <system-err>&gt; Enter [It] should collect benchmark results - /uat_workspace/peer-load-low/test_test.go:98 @ 08/25/26 22:12:11.824&#xA;=== Contention Benchmark Results ===&#xA;Successes: 30  Failures: 0&#xA;Throughput (tok/s): total=195.16 output=67.26 requests=1.0582&#xA;Request Latency (s): mean=0.3217 median=0.3240&#xA;TTFT (s): mean=0.0190 median=0.0171&#xA;ttft_mean_s - /uat_workspace/peer-load-low/test_test.go:126 @ 08/25/26 22:12:11.824&#xA;  0.018964758406703672&#xA;TPOT (s): mean=0.0048 median=0.0048&#xA;tpot_mean_s - /uat_workspace/peer-load-low/test_test.go:132 @ 08/25/26 22:12:11.824&#xA;  0.0048198383035547715&#xA;throughput_total_tokens_per_sec - /uat_workspace/peer-load-low/test_test.go:135 @ 08/25/26 22:12:11.824&#xA;  195.16199792145753&#xA;throughput_output_tokens_per_sec - /uat_workspace/peer-load-low/test_test.go:136 @ 08/25/26 22:12:11.824&#xA;  67.26440087406823&#xA;request_latency_mean_s - /uat_workspace/peer-load-low/test_test.go:137 @ 08/25/26 22:12:11.824&#xA;  0.32167047553812156&#xA;&lt; Exit [It] should collect benchmark results - /uat_workspace/peer-load-low/test_test.go:98 @ 08/25/26 22:12:11.824 (1ms)&#xA;</system-err>
+          </testcase>
+      </testsuite>
+  </testsuites>

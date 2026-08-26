@@ -1,0 +1,53 @@
+# Assisted by Claude Opus 4.6
+apiVersion: v1
+kind: Pod
+metadata:
+  name: t6-guidellm-moc-r4pcc02u05-sweep-short-burst
+  namespace: uat-project
+  labels:
+    app.kubernetes.io/managed-by: uat-generator
+    test: guidellm
+    dag-step: sweep
+    node: moc-r4pcc02u05
+    sweep: short-burst
+spec:
+  tolerations:
+    - key: nvidia.com/gpu.product
+      operator: Exists
+      effect: NoSchedule
+  nodeSelector:
+    kubernetes.io/hostname: moc-r4pcc02u05
+  containers:
+    - name: t6-guidellm-moc-r4pcc02u05-sweep-short-burst
+      image: ghcr.io/vllm-project/guidellm:v0.6.1
+      command:
+        - /binaries/guidellm/test.bin
+        - --ginkgo.label-filter=quantitative
+        - --ginkgo.junit-report=/uat_workspace/junit.xml
+      env:
+        - name: HOME
+          value: /tmp
+        - name: SERVER_URL
+          value: "http://svc-t6-guidellm-moc-r4pcc02u05-vllm-server:8000"
+        - name: SWEEP_COMMAND
+          value: "[\"guidellm\", \"benchmark\", \"run\", \"--target=http://svc-t6-guidellm-moc-r4pcc02u05-vllm-server:8000\", \"--output-dir=/uat_workspace\", \"--outputs=json\", \"--rate-type=throughput\", \"--max-seconds=30\", \"--rate=4\", \"--data=prompt_tokens=128,output_tokens=64\"]"
+        - name: RESULTS_DIR
+          value: /uat_workspace
+      volumeMounts:
+        - name: workspace
+          mountPath: /uat_workspace
+          subPath: uat/results/manual-run/t6-guidellm-moc-r4pcc02u05-sweep-short-burst
+        - name: workspace
+          mountPath: /binaries
+          subPath: uat/results/manual-run/binaries
+        - name: models
+          mountPath: /models
+          readOnly: true
+  volumes:
+    - name: workspace
+      persistentVolumeClaim:
+        claimName: uat-project-storage
+    - name: models
+      persistentVolumeClaim:
+        claimName: uat-models
+  restartPolicy: Never

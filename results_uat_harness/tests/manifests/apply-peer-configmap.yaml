@@ -1,0 +1,3039 @@
+# Assisted by Claude Opus 4.6
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: uat-test-source
+  namespace: uat-peer
+  labels:
+    app.kubernetes.io/managed-by: uat-generator
+data:
+  platform-check_test.go: |
+    // Assisted by Claude Opus 4.6
+    package test
+
+    import (
+    	"context"
+    	"encoding/json"
+    	"fmt"
+    	"os"
+    	"testing"
+
+    	. "github.com/onsi/ginkgo/v2"
+    	. "github.com/onsi/gomega"
+    	authorizationv1 "k8s.io/api/authorization/v1"
+    	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+    	"k8s.io/client-go/kubernetes"
+    	"k8s.io/client-go/rest"
+    )
+
+    type Check struct {
+    	Type       string `json:"type"`
+    	Verb       string `json:"verb,omitempty"`
+    	Resource   string `json:"resource,omitempty"`
+    	Group      string `json:"group,omitempty"`
+    	APIVersion string `json:"apiVersion,omitempty"`
+    	Kind       string `json:"kind,omitempty"`
+    	Expected   string `json:"expected"`
+    }
+
+    var (
+    	checks    []Check
+    	clientset *kubernetes.Clientset
+    )
+
+    func TestPlatformCheck(t *testing.T) {
+    	RegisterFailHandler(Fail)
+    	RunSpecs(t, "Platform Check Test Suite")
+    }
+
+    var _ = BeforeSuite(func() {
+    	raw := os.Getenv("PERMISSION_CHECKS")
+    	Expect(raw).NotTo(BeEmpty(), "PERMISSION_CHECKS must be set")
+    	Expect(json.Unmarshal([]byte(raw), &checks)).To(Succeed())
+    	Expect(checks).NotTo(BeEmpty())
+
+    	config, err := rest.InClusterConfig()
+    	Expect(err).NotTo(HaveOccurred())
+    	clientset, err = kubernetes.NewForConfig(config)
+    	Expect(err).NotTo(HaveOccurred())
+    })
+
+    func checkPermission(verb, resource string) string {
+    	review, err := clientset.AuthorizationV1().SelfSubjectAccessReviews().Create(
+    		context.TODO(),
+    		&authorizationv1.SelfSubjectAccessReview{
+    			Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+    				ResourceAttributes: &authorizationv1.ResourceAttributes{
+    					Verb: verb, Resource: resource,
+    				},
+    			},
+    		},
+    		metav1.CreateOptions{},
+    	)
+    	Expect(err).NotTo(HaveOccurred())
+    	if review.Status.Allowed {
+    		return "yes"
+    	}
+    	return "no"
+    }
+
+    func checkAPIGroup(group string) string {
+    	groups, err := clientset.Discovery().ServerGroups()
+    	Expect(err).NotTo(HaveOccurred())
+    	for _, g := range groups.Groups {
+    		if g.Name == group {
+    			return "yes"
+    		}
+    	}
+    	return "no"
+    }
+
+    func checkCRD(apiVersion, kind string) string {
+    	resources, err := clientset.Discovery().ServerResourcesForGroupVersion(apiVersion)
+    	if err != nil {
+    		return "no"
+    	}
+    	for _, r := range resources.APIResources {
+    		if r.Kind == kind {
+    			return "yes"
+    		}
+    	}
+    	return "no"
+    }
+
+    var _ = Describe("Platform Check", Label("pass-fail"), func() {
+    	It("validates all checks", func() {
+    		var failures []string
+    		for _, c := range checks {
+    			var label, actual string
+    			switch c.Type {
+    			case "permission":
+    				label = fmt.Sprintf("permission  %-7s %s", c.Verb, c.Resource)
+    				actual = checkPermission(c.Verb, c.Resource)
+    			case "apiGroup":
+    				label = fmt.Sprintf("apiGroup    %s", c.Group)
+    				actual = checkAPIGroup(c.Group)
+    			case "crd":
+    				label = fmt.Sprintf("crd         %s/%s", c.APIVersion, c.Kind)
+    				actual = checkCRD(c.APIVersion, c.Kind)
+    			default:
+    				label = fmt.Sprintf("unknown     %s", c.Type)
+    				actual = "error"
+    			}
+    			status := "PASS"
+    			if actual != c.Expected {
+    				status = "FAIL"
+    				failures = append(failures, label)
+    			}
+    			fmt.Fprintf(os.Stdout, "  %s  %-55s got=%-5s expected=%s\n", status, label, actual, c.Expected)
+    		}
+    		Expect(failures).To(BeEmpty(), "failed checks: %v", failures)
+    	})
+    })
+
+  component_test.go: |
+    // Assisted by Claude Opus 4.6
+    package test
+
+    import (
+    	_ "embed"
+    	"fmt"
+    	"os"
+    	"os/exec"
+    	"path/filepath"
+    	"regexp"
+    	"strconv"
+    	"strings"
+    	"testing"
+
+    	. "github.com/onsi/ginkgo/v2"
+    	. "github.com/onsi/gomega"
+    	"gopkg.in/yaml.v3"
+    )
+
+    //go:embed cluster.yaml
+    var clusterYAMLData []byte
+
+    type ClusterConfig struct {
+    	Spec ClusterConfigSpec `yaml:"spec"`
+    }
+
+    type ClusterConfigSpec struct {
+    	Compliance ComplianceSpec `yaml:"compliance"`
+    	Nodes      []NodeSpec     `yaml:"nodes"`
+    }
+
+    type ComplianceSpec struct {
+    	FipsEnabled bool `yaml:"fipsEnabled"`
+    }
+
+    type ResourceNames struct {
+    	GpuModel string `yaml:"nvidia.com/gpu"`
+    	CpuModel string `yaml:"cpu"`
+    }
+
+    type SanitySpec struct {
+    	GpuCount       int           `yaml:"nvidia.com/gpu"`
+    	CpuCount       int           `yaml:"cpu"`
+    	Memory         string        `yaml:"memory"`
+    	ResourceNames  ResourceNames `yaml:"resourceNames"`
+    	Nvlink         string        `yaml:"nvlink"`
+    	NvlinkTopology string        `yaml:"nvlinkTopology"`
+    	PcieWidth      int           `yaml:"pcieWidth"`
+    	PcieGen        int           `yaml:"pcieGen"`
+    	NumaNodes      int           `yaml:"numaNodes"`
+    }
+
+    type IdealSpec struct {
+    	CudaDriverVersion    string   `yaml:"cudaDriverVersion"`
+    	GpuPowerLimit        int      `yaml:"gpuPowerLimit"`
+    	GpuPersistenceMode   bool     `yaml:"gpuPersistenceMode"`
+    	Kernel               string   `yaml:"kernel"`
+    	Hugepages            string   `yaml:"hugepages"`
+    	CpuFreqGovernor      string   `yaml:"cpuFreqGovernor"`
+    	CpuIdleDriver        string   `yaml:"cpuIdleDriver"`
+    	CpuIdleGovernor      string   `yaml:"cpuIdleGovernor"`
+    	CpuCStatesEnabled    []string `yaml:"cpuCStatesEnabled"`
+    	TransparentHugepages string   `yaml:"transparentHugepages"`
+    }
+
+    type ComponentValidation struct {
+    	Sanity SanitySpec `yaml:"sanity"`
+    	Ideal  IdealSpec  `yaml:"ideal"`
+    }
+
+    type NodeSpec struct {
+    	Name                string              `yaml:"name"`
+    	ComponentValidation ComponentValidation `yaml:"componentValidation"`
+    }
+
+    var (
+    	sanity     SanitySpec
+    	ideal      IdealSpec
+    	compliance ComplianceSpec
+    	componentResultsDir string
+    )
+
+    func TestComponent(t *testing.T) {
+    	RegisterFailHandler(Fail)
+    	RunSpecs(t, "Component Validation Suite")
+    }
+
+    var _ = BeforeSuite(func() {
+    	componentResultsDir = os.Getenv("RESULTS_DIR")
+    	Expect(componentResultsDir).NotTo(BeEmpty(), "RESULTS_DIR must be set")
+
+    	nodeName := os.Getenv("NODE_NAME")
+    	Expect(nodeName).NotTo(BeEmpty(), "NODE_NAME must be set")
+
+    	var cluster ClusterConfig
+    	err := yaml.Unmarshal(clusterYAMLData, &cluster)
+    	Expect(err).NotTo(HaveOccurred(), "Failed to parse embedded cluster.yaml")
+
+    	found := false
+    	for _, n := range cluster.Spec.Nodes {
+    		if n.Name == nodeName {
+    			sanity = n.ComponentValidation.Sanity
+    			ideal = n.ComponentValidation.Ideal
+    			found = true
+    			break
+    		}
+    	}
+    	Expect(found).To(BeTrue(), "Node %s not found in cluster config", nodeName)
+
+    	compliance = cluster.Spec.Compliance
+
+    	GinkgoWriter.Printf("Node: %s\n", nodeName)
+    	GinkgoWriter.Printf("Expected GPU: %dx %s\n", sanity.GpuCount, sanity.ResourceNames.GpuModel)
+    	GinkgoWriter.Printf("Expected CPU: %s (count: %d)\n", sanity.ResourceNames.CpuModel, sanity.CpuCount)
+    	GinkgoWriter.Printf("Expected memory: %s\n", sanity.Memory)
+    })
+
+    func nvidiaSmiQuery(field string) string {
+    	output, err := exec.Command("nvidia-smi",
+    		"--query-gpu="+field, "--format=csv,noheader,nounits").CombinedOutput()
+    	ExpectWithOffset(1, err).NotTo(HaveOccurred(),
+    		"nvidia-smi query %s failed: %s", field, string(output))
+    	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+    	ExpectWithOffset(1, lines).NotTo(BeEmpty())
+    	return strings.TrimSpace(lines[0])
+    }
+
+    func nvidiaSmiQueryAll(field string) []string {
+    	output, err := exec.Command("nvidia-smi",
+    		"--query-gpu="+field, "--format=csv,noheader,nounits").CombinedOutput()
+    	ExpectWithOffset(1, err).NotTo(HaveOccurred(),
+    		"nvidia-smi query %s failed: %s", field, string(output))
+    	var results []string
+    	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+    		results = append(results, strings.TrimSpace(line))
+    	}
+    	return results
+    }
+
+    func readSysfs(path string) string {
+    	data, err := os.ReadFile(path)
+    	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to read %s", path)
+    	return strings.TrimSpace(string(data))
+    }
+
+    func readSysfsWithFallback(paths ...string) string {
+    	for _, p := range paths {
+    		data, err := os.ReadFile(p)
+    		if err == nil {
+    			return strings.TrimSpace(string(data))
+    		}
+    	}
+    	Fail(fmt.Sprintf("None of the paths were readable: %v", paths))
+    	return ""
+    }
+
+    // ---------------------------------------------------------------------------
+    // Sanity checks
+    // ---------------------------------------------------------------------------
+
+    var _ = Describe("Sanity Checks", Label("pass-fail"), func() {
+
+    	It("should detect correct GPU count", func() {
+    		output, err := exec.Command("nvidia-smi", "-L").CombinedOutput()
+    		Expect(err).NotTo(HaveOccurred(), "nvidia-smi failed: %s", string(output))
+
+    		count := 0
+    		for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+    			if strings.HasPrefix(line, "GPU ") {
+    				count++
+    			}
+    		}
+    		GinkgoWriter.Printf("GPU count: %d (expected: %d)\n", count, sanity.GpuCount)
+    		Expect(count).To(Equal(sanity.GpuCount),
+    			"GPU count mismatch: nvidia-smi reports %d GPU(s) but the cluster config expects %d. "+
+    				"This means the node is either missing GPUs (hardware fault, driver issue) or the "+
+    				"cluster config has the wrong nvidia.com/gpu count for this node.", count, sanity.GpuCount)
+    	})
+
+    	It("should detect correct GPU model", func() {
+    		gpuName := nvidiaSmiQuery("name")
+    		actual := strings.ReplaceAll(gpuName, " ", "-")
+    		GinkgoWriter.Printf("GPU model: %s (expected: %s)\n", actual, sanity.ResourceNames.GpuModel)
+    		Expect(actual).To(Equal(sanity.ResourceNames.GpuModel),
+    			"GPU model mismatch: nvidia-smi reports '%s' but the cluster config expects '%s'. "+
+    				"This node may have been assigned the wrong spec in cluster.yaml, or GPUs were "+
+    				"physically swapped without updating the config.", actual, sanity.ResourceNames.GpuModel)
+    	})
+
+    	It("should have correct NVLink width", func() {
+    		output, err := exec.Command("nvidia-smi", "topo", "-m").CombinedOutput()
+    		Expect(err).NotTo(HaveOccurred(), "nvidia-smi topo failed: %s", string(output))
+
+    		nvRe := regexp.MustCompile(`NV(\d+)`)
+    		var widths []string
+    		for _, line := range strings.Split(string(output), "\n") {
+    			if !strings.HasPrefix(line, "GPU") {
+    				continue
+    			}
+    			for _, match := range nvRe.FindAllString(line, -1) {
+    				widths = append(widths, match)
+    			}
+    		}
+    		Expect(widths).NotTo(BeEmpty(), "No NVLink connections found in nvidia-smi topo output. "+
+    			"The GPUs may not be NVLink-capable, or the topology query format has changed.")
+    		for _, w := range widths {
+    			GinkgoWriter.Printf("NVLink connection: %s (expected: %s)\n", w, sanity.Nvlink)
+    			Expect(w).To(Equal(sanity.Nvlink),
+    				"NVLink width mismatch: detected '%s' but expected '%s'. "+
+    					"A lower NVLink width (e.g. NV4 vs NV12) degrades GPU-to-GPU bandwidth "+
+    					"and will bottleneck distributed training workloads.", w, sanity.Nvlink)
+    		}
+    	})
+
+    	It("should have correct NVLink topology", func() {
+    		if sanity.NvlinkTopology != "all-to-all" {
+    			Skip("Only all-to-all topology validation is supported")
+    		}
+
+    		output, err := exec.Command("nvidia-smi", "topo", "-m").CombinedOutput()
+    		Expect(err).NotTo(HaveOccurred(), "nvidia-smi topo failed: %s", string(output))
+
+    		nvRe := regexp.MustCompile(`NV\d+`)
+    		gpuLines := 0
+    		for _, line := range strings.Split(string(output), "\n") {
+    			if !strings.HasPrefix(line, "GPU") {
+    				continue
+    			}
+    			gpuLines++
+    			fields := strings.Fields(line)
+    			// fields[0] = "GPU0", fields[1:] = connection types to other GPUs/NICs
+    			// GPU-to-GPU connections should all be NV#
+    			gpuConnections := 0
+    			nvConnections := 0
+    			for _, f := range fields[1:] {
+    				if f == "X" {
+    					continue
+    				}
+    				if strings.HasPrefix(f, "GPU") || strings.HasPrefix(f, "NV") ||
+    					f == "SYS" || f == "NODE" || f == "PHB" || f == "PXB" || f == "PIX" {
+    					if nvRe.MatchString(f) {
+    						nvConnections++
+    					}
+    					// Count only up to GpuCount-1 fields as GPU connections
+    					gpuConnections++
+    					if gpuConnections >= sanity.GpuCount-1 {
+    						break
+    					}
+    				}
+    			}
+    			GinkgoWriter.Printf("GPU line %d: %d/%d connections are NVLink\n",
+    				gpuLines, nvConnections, sanity.GpuCount-1)
+    			Expect(nvConnections).To(Equal(sanity.GpuCount-1),
+    				"NVLink topology mismatch on GPU line %d: only %d of %d GPU-to-GPU connections "+
+    					"use NVLink. For all-to-all topology, every GPU must have a direct NVLink path "+
+    					"to every other GPU. Missing links force traffic through PCIe/SYS, which is "+
+    					"orders of magnitude slower for NCCL collectives.", gpuLines, nvConnections, sanity.GpuCount-1)
+    		}
+    		Expect(gpuLines).To(Equal(sanity.GpuCount),
+    			"GPU topology row count mismatch: nvidia-smi topo shows %d GPU rows but expected %d. "+
+    				"Some GPUs may not be visible to the driver.", gpuLines, sanity.GpuCount)
+    	})
+
+    	It("should report correct PCIe link width", func() {
+    		for i, w := range nvidiaSmiQueryAll("pcie.link.width.current") {
+    			GinkgoWriter.Printf("PCIe width: %s (expected: %d)\n", w, sanity.PcieWidth)
+    			actual, err := strconv.Atoi(w)
+    			Expect(err).NotTo(HaveOccurred())
+    			Expect(actual).To(Equal(sanity.PcieWidth),
+    				"PCIe link width mismatch on GPU %d: running at x%d but expected x%d. "+
+    					"A narrower link (e.g. x8 vs x16) halves the host-to-GPU bandwidth. "+
+    					"Common causes: GPU not fully seated in the slot, or a PCIe riser/cable issue.",
+    				i, actual, sanity.PcieWidth)
+    		}
+    	})
+
+    	It("should report correct PCIe generation", func() {
+    		for i, g := range nvidiaSmiQueryAll("pcie.link.gen.current") {
+    			GinkgoWriter.Printf("PCIe gen: %s (expected: %d)\n", g, sanity.PcieGen)
+    			actual, err := strconv.Atoi(g)
+    			Expect(err).NotTo(HaveOccurred())
+    			Expect(actual).To(Equal(sanity.PcieGen),
+    				"PCIe generation mismatch on GPU %d: running at Gen%d but expected Gen%d. "+
+    					"A lower generation (e.g. Gen4 vs Gen5) reduces per-lane throughput. "+
+    					"Check that the slot supports the expected generation and that no BIOS "+
+    					"setting is capping it.", i, actual, sanity.PcieGen)
+    		}
+    	})
+
+    	It("should match expected CPU model", func() {
+    		data, err := os.ReadFile("/proc/cpuinfo")
+    		Expect(err).NotTo(HaveOccurred())
+
+    		var actual string
+    		for _, line := range strings.Split(string(data), "\n") {
+    			parts := strings.SplitN(line, ":", 2)
+    			if len(parts) == 2 && strings.TrimSpace(parts[0]) == "model name" {
+    				actual = strings.TrimSpace(parts[1])
+    				break
+    			}
+    		}
+    		Expect(actual).NotTo(BeEmpty(), "model name not found in /proc/cpuinfo")
+    		GinkgoWriter.Printf("CPU model: %s (expected: %s)\n", actual, sanity.ResourceNames.CpuModel)
+    		Expect(actual).To(Equal(sanity.ResourceNames.CpuModel),
+    			"CPU model mismatch: /proc/cpuinfo reports '%s' but the cluster config expects '%s'. "+
+    				"This node may have been assigned the wrong spec in cluster.yaml, or the pod "+
+    				"scheduled on the wrong node.", actual, sanity.ResourceNames.CpuModel)
+    	})
+
+    	It("should report correct CPU count", func() {
+    		data, err := os.ReadFile("/proc/cpuinfo")
+    		Expect(err).NotTo(HaveOccurred())
+
+    		count := 0
+    		for _, line := range strings.Split(string(data), "\n") {
+    			if strings.HasPrefix(line, "processor") {
+    				count++
+    			}
+    		}
+    		GinkgoWriter.Printf("CPU count: %d (expected: %d)\n", count, sanity.CpuCount)
+    		Expect(count).To(Equal(sanity.CpuCount),
+    			"CPU count mismatch: /proc/cpuinfo shows %d logical CPUs but the cluster config "+
+    				"expects %d. If lower, check whether CPU cores are offline or the container's "+
+    				"cpuset is restricted. If higher, the cluster config may be outdated.",
+    			count, sanity.CpuCount)
+    	})
+
+    	It("should report memory capacity within expected range", func() {
+    		data, err := os.ReadFile("/proc/meminfo")
+    		Expect(err).NotTo(HaveOccurred())
+
+    		memTotalKB := extractMemInfoKB(string(data), "MemTotal")
+    		Expect(memTotalKB).NotTo(BeZero(), "MemTotal not found in /proc/meminfo")
+
+    		memTotalGi := float64(memTotalKB) / (1024 * 1024)
+    		expectedGi := parseGi(sanity.Memory)
+    		GinkgoWriter.Printf("Memory: %.1f Gi (expected: %.1f Gi)\n", memTotalGi, expectedGi)
+    		Expect(memTotalGi).To(BeNumerically("~", expectedGi, expectedGi*0.05),
+    			"Memory capacity mismatch: /proc/meminfo reports %.1f Gi but the cluster config "+
+    				"expects %.1f Gi (tolerance: 5%%). A significant shortfall may indicate failed "+
+    				"DIMMs or a BIOS memory configuration issue.", memTotalGi, expectedGi)
+    	})
+
+    	It("should detect correct NUMA node count", func() {
+    		entries, err := filepath.Glob("/sys/devices/system/node/node[0-9]*")
+    		Expect(err).NotTo(HaveOccurred())
+
+    		count := len(entries)
+    		GinkgoWriter.Printf("NUMA nodes: %d (expected: %d)\n", count, sanity.NumaNodes)
+    		Expect(count).To(Equal(sanity.NumaNodes),
+    			"NUMA node count mismatch: found %d NUMA nodes but expected %d. "+
+    				"Wrong NUMA topology affects memory locality for GPU workloads "+
+    				"and can cause cross-socket memory access penalties.", count, sanity.NumaNodes)
+    	})
+    })
+
+    // ---------------------------------------------------------------------------
+    // Ideal checks
+    // ---------------------------------------------------------------------------
+
+    var _ = Describe("Ideal Configuration", Label("pass-fail"), func() {
+
+    	It("should report correct CUDA driver version", func() {
+    		actual := nvidiaSmiQuery("driver_version")
+    		GinkgoWriter.Printf("CUDA driver: %s (expected: %s)\n", actual, ideal.CudaDriverVersion)
+    		Expect(actual).To(Equal(ideal.CudaDriverVersion),
+    			"CUDA driver version mismatch: node has '%s' but expected '%s'. "+
+    				"Mismatched driver versions across nodes can cause silent failures "+
+    				"in distributed training. Check whether the GPU operator deployed "+
+    				"the expected driver daemonset.", actual, ideal.CudaDriverVersion)
+    	})
+
+    	It("should have GPU power limit at expected value", func() {
+    		for _, raw := range nvidiaSmiQueryAll("power.limit") {
+    			watts, err := strconv.ParseFloat(raw, 64)
+    			Expect(err).NotTo(HaveOccurred(), "failed to parse power.limit: %s", raw)
+    			actual := int(watts)
+    			GinkgoWriter.Printf("GPU power limit: %d W (expected: %d W)\n", actual, ideal.GpuPowerLimit)
+    			Expect(actual).To(Equal(ideal.GpuPowerLimit),
+    				"GPU power limit mismatch: set to %d W but expected %d W. "+
+    					"A lower power limit throttles GPU clock speeds and reduces training "+
+    					"throughput. Check nvidia-smi or the GPU operator's power management config.",
+    				actual, ideal.GpuPowerLimit)
+    		}
+    	})
+
+    	It("should have GPU persistence mode set correctly", func() {
+    		actual := nvidiaSmiQuery("persistence_mode")
+    		expected := "Disabled"
+    		if ideal.GpuPersistenceMode {
+    			expected = "Enabled"
+    		}
+    		GinkgoWriter.Printf("GPU persistence mode: %s (expected: %s)\n", actual, expected)
+    		Expect(actual).To(Equal(expected),
+    			"GPU persistence mode is '%s' but expected '%s'. "+
+    				"When persistence mode is disabled, the GPU driver unloads between jobs, "+
+    				"adding several seconds of cold-start latency to every GPU workload.",
+    			actual, expected)
+    	})
+
+    	It("should match expected kernel version", func() {
+    		output, err := exec.Command("uname", "-r").CombinedOutput()
+    		Expect(err).NotTo(HaveOccurred(), "uname failed: %s", string(output))
+
+    		actual := strings.TrimSpace(string(output))
+    		GinkgoWriter.Printf("Kernel: %s (expected: %s)\n", actual, ideal.Kernel)
+    		Expect(actual).To(Equal(ideal.Kernel),
+    			"Kernel version mismatch: running '%s' but expected '%s'. "+
+    				"A different kernel version may lack required drivers, security patches, "+
+    				"or feature support (e.g. IPsec full offload requires kernel 6.12+). "+
+    				"Check that MachineConfig is applying the correct OS image.", actual, ideal.Kernel)
+    	})
+
+    	It("should have hugepages configured correctly", func() {
+    		data := readSysfs("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages")
+    		actualPages, err := strconv.Atoi(data)
+    		Expect(err).NotTo(HaveOccurred())
+
+    		expectedMi := parseMi(ideal.Hugepages)
+    		expectedPages := expectedMi / 2
+    		GinkgoWriter.Printf("Hugepages 2Mi: %d pages (expected: %d)\n", actualPages, expectedPages)
+    		Expect(actualPages).To(Equal(expectedPages),
+    			"Hugepages mismatch: %d 2Mi pages allocated but expected %d (= %s). "+
+    				"Insufficient hugepages starve DPDK and RDMA-based workloads. "+
+    				"Check the node's kernel boot parameters or the Tuned/PerformanceProfile config.",
+    			actualPages, expectedPages, ideal.Hugepages)
+    	})
+
+    	It("should have CPU frequency governor set to expected value", func() {
+    		actual := readSysfs("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+    		GinkgoWriter.Printf("CPU freq governor: %s (expected: %s)\n", actual, ideal.CpuFreqGovernor)
+    		Expect(actual).To(Equal(ideal.CpuFreqGovernor),
+    			"CPU frequency governor mismatch: running '%s' but expected '%s'. "+
+    				"'powersave' or 'ondemand' governors throttle CPU frequency under load, "+
+    				"adding latency to data preprocessing and CPU-bound inference steps. "+
+    				"'performance' governor keeps all cores at max frequency.",
+    			actual, ideal.CpuFreqGovernor)
+    	})
+
+    	It("should have correct CPU idle driver", func() {
+    		actual := readSysfs("/sys/devices/system/cpu/cpuidle/current_driver")
+    		GinkgoWriter.Printf("CPU idle driver: %s (expected: %s)\n", actual, ideal.CpuIdleDriver)
+    		Expect(actual).To(Equal(ideal.CpuIdleDriver),
+    			"CPU idle driver mismatch: running '%s' but expected '%s'. "+
+    				"The idle driver controls which C-states are available. Using the wrong "+
+    				"driver (e.g. intel_idle vs acpi_idle) can enable deep sleep states that "+
+    				"add microseconds of wake-up latency to interrupt handling.",
+    			actual, ideal.CpuIdleDriver)
+    	})
+
+    	It("should have correct CPU idle governor", func() {
+    		actual := readSysfsWithFallback(
+    			"/sys/devices/system/cpu/cpuidle/current_governor_ro",
+    			"/sys/devices/system/cpu/cpuidle/current_governor",
+    		)
+    		GinkgoWriter.Printf("CPU idle governor: %s (expected: %s)\n", actual, ideal.CpuIdleGovernor)
+    		Expect(actual).To(Equal(ideal.CpuIdleGovernor),
+    			"CPU idle governor mismatch: running '%s' but expected '%s'. "+
+    				"The idle governor decides when to enter deeper C-states. "+
+    				"For latency-sensitive GPU workloads, 'menu' is standard; "+
+    				"'ladder' may cause excessive deep-sleep transitions.",
+    			actual, ideal.CpuIdleGovernor)
+    	})
+
+    	It("should have only expected C-states enabled", func() {
+    		states, err := filepath.Glob("/sys/devices/system/cpu/cpu0/cpuidle/state[0-9]*")
+    		Expect(err).NotTo(HaveOccurred())
+    		Expect(states).NotTo(BeEmpty(), "No cpuidle states found")
+
+    		var enabled []string
+    		for _, s := range states {
+    			disabled := readSysfs(filepath.Join(s, "disable"))
+    			if disabled == "0" {
+    				name := readSysfs(filepath.Join(s, "name"))
+    				enabled = append(enabled, name)
+    			}
+    		}
+
+    		GinkgoWriter.Printf("Enabled C-states: %v (expected: %v)\n", enabled, ideal.CpuCStatesEnabled)
+    		Expect(enabled).To(Equal(ideal.CpuCStatesEnabled),
+    			"C-state mismatch: enabled states are %v but expected %v. "+
+    				"Deep C-states (C3+) save power but add wake-up latency that impacts "+
+    				"interrupt-driven workloads like RDMA and GPU data transfers. "+
+    				"For AI nodes, typically only POLL and C1 should be enabled.",
+    			enabled, ideal.CpuCStatesEnabled)
+    	})
+
+    	It("should have transparent hugepages set correctly", func() {
+    		raw := readSysfs("/sys/kernel/mm/transparent_hugepage/enabled")
+    		// format: "always [madvise] never" — active value is in brackets
+    		re := regexp.MustCompile(`\[(\w+)\]`)
+    		match := re.FindStringSubmatch(raw)
+    		Expect(match).To(HaveLen(2), "Could not parse THP setting from: %s", raw)
+
+    		actual := match[1]
+    		GinkgoWriter.Printf("Transparent hugepages: %s (expected: %s)\n", actual, ideal.TransparentHugepages)
+    		Expect(actual).To(Equal(ideal.TransparentHugepages),
+    			"Transparent hugepages (THP) mismatch: set to '%s' but expected '%s'. "+
+    				"THP set to 'always' can cause unpredictable latency spikes from "+
+    				"background compaction (khugepaged). 'madvise' lets applications "+
+    				"opt in explicitly; 'never' disables THP entirely.",
+    			actual, ideal.TransparentHugepages)
+    	})
+    })
+
+    // ---------------------------------------------------------------------------
+    // Compliance checks
+    // ---------------------------------------------------------------------------
+
+    var _ = Describe("Compliance Checks", Label("pass-fail"), func() {
+
+    	It("should have FIPS mode enabled", func() {
+    		if !compliance.FipsEnabled {
+    			Skip("FIPS mode not required by cluster config")
+    		}
+
+    		actual := readSysfs("/proc/sys/crypto/fips_enabled")
+    		GinkgoWriter.Printf("FIPS mode: %s (expected: 1)\n", actual)
+    		Expect(actual).To(Equal("1"),
+    			"FIPS mode is not enabled on this node (/proc/sys/crypto/fips_enabled = '%s'). "+
+    				"NIST 800-171 requires FIPS-validated cryptographic modules (requirement 3.13.11). "+
+    				"FIPS mode must be enabled at OpenShift install time via the install-config.yaml "+
+    				"'fips: true' setting — it cannot be turned on after installation without a "+
+    				"full cluster reinstall.", actual)
+    	})
+    })
+
+    // ---------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------
+
+    func extractMemInfoKB(meminfo, field string) int64 {
+    	for _, line := range strings.Split(meminfo, "\n") {
+    		if strings.HasPrefix(line, field+":") {
+    			parts := strings.Fields(line)
+    			if len(parts) >= 2 {
+    				val, _ := strconv.ParseInt(parts[1], 10, 64)
+    				return val
+    			}
+    		}
+    	}
+    	return 0
+    }
+
+    func parseGi(s string) float64 {
+    	s = strings.TrimSuffix(s, "Gi")
+    	val, _ := strconv.ParseFloat(s, 64)
+    	return val
+    }
+
+    func parseMi(s string) int {
+    	s = strings.TrimSuffix(s, "Mi")
+    	val, _ := strconv.Atoi(s)
+    	return val
+    }
+
+  iperf3_test.go: |
+    // Assisted by Claude Opus 4.6
+    package test
+
+    import (
+    	"encoding/json"
+    	"fmt"
+    	"net"
+    	"os"
+    	"os/exec"
+    	"testing"
+    	"time"
+
+    	. "github.com/onsi/ginkgo/v2"
+    	. "github.com/onsi/gomega"
+    )
+
+    type IperfResult struct {
+    	End IperfEnd `json:"end"`
+    }
+
+    type IperfEnd struct {
+    	SumReceived IperfSum `json:"sum_received"`
+    }
+
+    type IperfSum struct {
+    	BitsPerSecond float64 `json:"bits_per_second"`
+    }
+
+    var (
+    	serverHost string
+    	resultsDir string
+    )
+
+    func TestIperf3(t *testing.T) {
+    	RegisterFailHandler(Fail)
+    	RunSpecs(t, "iperf3 TCP Bandwidth Test Suite")
+    }
+
+    var _ = BeforeSuite(func() {
+    	serverHost = os.Getenv("SERVER_HOST")
+    	Expect(serverHost).NotTo(BeEmpty(), "SERVER_HOST must be set")
+
+    	resultsDir = os.Getenv("RESULTS_DIR")
+    	Expect(resultsDir).NotTo(BeEmpty(), "RESULTS_DIR must be set")
+
+    	GinkgoWriter.Printf("Server: %s\n", serverHost)
+    	GinkgoWriter.Printf("Results: %s\n", resultsDir)
+    })
+
+    var _ = Describe("iperf3 TCP Bandwidth", func() {
+
+    	Describe("Server Connectivity", Label("pass-fail"), func() {
+    		It("should be reachable on port 5201", func() {
+    			addr := fmt.Sprintf("%s:5201", serverHost)
+    			conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+    			Expect(err).NotTo(HaveOccurred(), "cannot reach iperf3 server at %s", addr)
+    			conn.Close()
+    		})
+    	})
+
+    	Describe("Bandwidth Measurement", Label("pass-fail"), func() {
+    		It("should measure non-zero TCP bandwidth", func() {
+    			Expect(os.MkdirAll(resultsDir, 0755)).To(Succeed())
+
+    			cmd := exec.Command("iperf3", "-c", serverHost, "-t", "10", "-J")
+    			output, err := cmd.CombinedOutput()
+    			GinkgoWriter.Printf("iperf3 output:\n%s\n", string(output))
+    			Expect(err).NotTo(HaveOccurred(), "iperf3 failed: %s", string(output))
+
+    			var result IperfResult
+    			Expect(json.Unmarshal(output, &result)).To(Succeed())
+
+    			bps := result.End.SumReceived.BitsPerSecond
+    			gbps := bps / 1e9
+    			GinkgoWriter.Printf("TCP bandwidth: %.2f Gbps\n", gbps)
+    			Expect(bps).To(BeNumerically(">", 0), "measured bandwidth is zero")
+
+    			AddReportEntry("bandwidth_gbps", gbps)
+    		})
+    	})
+
+    })
+
+  dev-env_test.go: |
+    // Assisted by Claude Opus 4.6
+    package test
+
+    import (
+    	"bufio"
+    	"crypto/rand"
+    	"encoding/base64"
+    	"encoding/binary"
+    	"encoding/json"
+    	"fmt"
+    	"io"
+    	"net"
+    	"net/http"
+    	"net/url"
+    	"os"
+    	"regexp"
+    	"strconv"
+    	"strings"
+    	"testing"
+    	"time"
+
+    	. "github.com/onsi/ginkgo/v2"
+    	. "github.com/onsi/gomega"
+    )
+
+    // ---------------------------------------------------------------------------
+    // Data types
+    // ---------------------------------------------------------------------------
+
+    type DiagResult struct {
+    	GPUCount      int          `json:"gpu_count"`
+    	Devices       []DeviceInfo `json:"devices"`
+    	NvidiaSmiTopo string       `json:"nvidia_smi_topo"`
+    }
+
+    type DeviceInfo struct {
+    	Name                string `json:"name"`
+    	TotalMemoryMB       int    `json:"total_memory_mb"`
+    	Major               int    `json:"major"`
+    	Minor               int    `json:"minor"`
+    	MultiProcessorCount int    `json:"multi_processor_count"`
+    }
+
+    type jupyterContents struct {
+    	Name    string `json:"name"`
+    	Path    string `json:"path"`
+    	Type    string `json:"type"`
+    	Content string `json:"content"`
+    }
+
+    type kernelInfo struct {
+    	ID   string `json:"id"`
+    	Name string `json:"name"`
+    }
+
+    type kernelMsg struct {
+    	Header       msgHeader              `json:"header"`
+    	ParentHeader msgHeader              `json:"parent_header"`
+    	Metadata     map[string]interface{} `json:"metadata"`
+    	Content      map[string]interface{} `json:"content"`
+    	Buffers      []interface{}          `json:"buffers"`
+    	Channel      string                 `json:"channel"`
+    }
+
+    type msgHeader struct {
+    	MsgID    string `json:"msg_id"`
+    	MsgType  string `json:"msg_type"`
+    	Username string `json:"username"`
+    	Session  string `json:"session"`
+    	Version  string `json:"version"`
+    }
+
+    // ---------------------------------------------------------------------------
+    // Minimal websocket client (standard library only)
+    // ---------------------------------------------------------------------------
+
+    type wsConn struct {
+    	conn net.Conn
+    	br   *bufio.Reader
+    }
+
+    func wsDial(httpURL, path string) (*wsConn, error) {
+    	u, err := url.Parse(httpURL)
+    	if err != nil {
+    		return nil, err
+    	}
+    	host := u.Host
+    	if !strings.Contains(host, ":") {
+    		host += ":80"
+    	}
+
+    	conn, err := net.DialTimeout("tcp", host, 10*time.Second)
+    	if err != nil {
+    		return nil, err
+    	}
+
+    	keyBytes := make([]byte, 16)
+    	rand.Read(keyBytes)
+    	key := base64.StdEncoding.EncodeToString(keyBytes)
+
+    	reqStr := fmt.Sprintf(
+    		"GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n",
+    		path, u.Host, key)
+
+    	if _, err := conn.Write([]byte(reqStr)); err != nil {
+    		conn.Close()
+    		return nil, err
+    	}
+
+    	br := bufio.NewReader(conn)
+    	resp, err := http.ReadResponse(br, nil)
+    	if err != nil {
+    		conn.Close()
+    		return nil, err
+    	}
+    	if resp.StatusCode != 101 {
+    		conn.Close()
+    		return nil, fmt.Errorf("websocket upgrade failed: status %d", resp.StatusCode)
+    	}
+
+    	return &wsConn{conn: conn, br: br}, nil
+    }
+
+    func (ws *wsConn) writeText(data []byte) error {
+    	frame := []byte{0x81}
+    	n := len(data)
+    	switch {
+    	case n < 126:
+    		frame = append(frame, byte(n)|0x80)
+    	case n < 65536:
+    		frame = append(frame, 126|0x80, byte(n>>8), byte(n))
+    	default:
+    		frame = append(frame, 127|0x80)
+    		b := make([]byte, 8)
+    		binary.BigEndian.PutUint64(b, uint64(n))
+    		frame = append(frame, b...)
+    	}
+    	mask := make([]byte, 4)
+    	rand.Read(mask)
+    	frame = append(frame, mask...)
+    	masked := make([]byte, n)
+    	for i, b := range data {
+    		masked[i] = b ^ mask[i%4]
+    	}
+    	_, err := ws.conn.Write(append(frame, masked...))
+    	return err
+    }
+
+    func (ws *wsConn) readMessage() (int, []byte, error) {
+    	hdr := make([]byte, 2)
+    	if _, err := io.ReadFull(ws.br, hdr); err != nil {
+    		return 0, nil, err
+    	}
+    	opcode := int(hdr[0] & 0x0f)
+    	isMasked := (hdr[1] & 0x80) != 0
+    	length := int64(hdr[1] & 0x7f)
+    	if length == 126 {
+    		ext := make([]byte, 2)
+    		if _, err := io.ReadFull(ws.br, ext); err != nil {
+    			return 0, nil, err
+    		}
+    		length = int64(binary.BigEndian.Uint16(ext))
+    	} else if length == 127 {
+    		ext := make([]byte, 8)
+    		if _, err := io.ReadFull(ws.br, ext); err != nil {
+    			return 0, nil, err
+    		}
+    		length = int64(binary.BigEndian.Uint64(ext))
+    	}
+    	var mask []byte
+    	if isMasked {
+    		mask = make([]byte, 4)
+    		if _, err := io.ReadFull(ws.br, mask); err != nil {
+    			return 0, nil, err
+    		}
+    	}
+    	payload := make([]byte, length)
+    	if _, err := io.ReadFull(ws.br, payload); err != nil {
+    		return 0, nil, err
+    	}
+    	if isMasked {
+    		for i := range payload {
+    			payload[i] ^= mask[i%4]
+    		}
+    	}
+    	return opcode, payload, nil
+    }
+
+    func (ws *wsConn) readText() ([]byte, error) {
+    	for {
+    		opcode, payload, err := ws.readMessage()
+    		if err != nil {
+    			return nil, err
+    		}
+    		switch opcode {
+    		case 1:
+    			return payload, nil
+    		case 8:
+    			return nil, fmt.Errorf("websocket closed by server")
+    		case 9:
+    			pong := []byte{0x8a}
+    			n := len(payload)
+    			if n < 126 {
+    				pong = append(pong, byte(n)|0x80)
+    			}
+    			mask := make([]byte, 4)
+    			rand.Read(mask)
+    			pong = append(pong, mask...)
+    			for i, b := range payload {
+    				pong = append(pong, b^mask[i%4])
+    			}
+    			ws.conn.Write(pong)
+    		}
+    	}
+    }
+
+    func (ws *wsConn) close() {
+    	frame := []byte{0x88, 0x82}
+    	mask := make([]byte, 4)
+    	rand.Read(mask)
+    	frame = append(frame, mask...)
+    	frame = append(frame, 0x03^mask[0], 0xE8^mask[1])
+    	ws.conn.Write(frame)
+    	ws.conn.Close()
+    }
+
+    // ---------------------------------------------------------------------------
+    // Jupyter API helpers
+    // ---------------------------------------------------------------------------
+
+    func randHex() string {
+    	b := make([]byte, 16)
+    	rand.Read(b)
+    	return fmt.Sprintf("%x", b)
+    }
+
+    func jupyterPut(baseURL, path string, body interface{}) error {
+    	data, err := json.Marshal(body)
+    	if err != nil {
+    		return err
+    	}
+    	req, err := http.NewRequest("PUT", baseURL+"/api/contents/"+path,
+    		strings.NewReader(string(data)))
+    	if err != nil {
+    		return err
+    	}
+    	req.Header.Set("Content-Type", "application/json")
+    	resp, err := http.DefaultClient.Do(req)
+    	if err != nil {
+    		return err
+    	}
+    	defer resp.Body.Close()
+    	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+    		b, _ := io.ReadAll(resp.Body)
+    		return fmt.Errorf("PUT %s returned %d: %s", path, resp.StatusCode, string(b))
+    	}
+    	return nil
+    }
+
+    func jupyterGet(baseURL, path string) ([]byte, error) {
+    	resp, err := http.Get(baseURL + "/api/contents/" + path)
+    	if err != nil {
+    		return nil, err
+    	}
+    	defer resp.Body.Close()
+    	if resp.StatusCode != 200 {
+    		return nil, fmt.Errorf("GET %s returned %d", path, resp.StatusCode)
+    	}
+    	return io.ReadAll(resp.Body)
+    }
+
+    func startKernel(baseURL string) (string, error) {
+    	resp, err := http.Post(baseURL+"/api/kernels", "application/json",
+    		strings.NewReader(`{"name":"python3"}`))
+    	if err != nil {
+    		return "", err
+    	}
+    	defer resp.Body.Close()
+    	if resp.StatusCode != 201 && resp.StatusCode != 200 {
+    		b, _ := io.ReadAll(resp.Body)
+    		return "", fmt.Errorf("start kernel returned %d: %s", resp.StatusCode, string(b))
+    	}
+    	var ki kernelInfo
+    	json.NewDecoder(resp.Body).Decode(&ki)
+    	return ki.ID, nil
+    }
+
+    func shutdownKernel(baseURL, id string) {
+    	req, _ := http.NewRequest("DELETE", baseURL+"/api/kernels/"+id, nil)
+    	http.DefaultClient.Do(req)
+    }
+
+    func executeOnKernel(baseURL, id, code string, timeout time.Duration) (string, error) {
+    	wsPath := fmt.Sprintf("/api/kernels/%s/channels", id)
+    	ws, err := wsDial(baseURL, wsPath)
+    	if err != nil {
+    		return "", fmt.Errorf("websocket connect: %w", err)
+    	}
+    	defer ws.close()
+
+    	ws.conn.SetDeadline(time.Now().Add(timeout))
+
+    	session := randHex()
+    	msgID := randHex()
+
+    	msg := kernelMsg{
+    		Header: msgHeader{
+    			MsgID:   msgID,
+    			MsgType: "execute_request",
+    			Session: session,
+    			Version: "5.3",
+    		},
+    		ParentHeader: msgHeader{},
+    		Content: map[string]interface{}{
+    			"code":             code,
+    			"silent":           false,
+    			"store_history":    false,
+    			"user_expressions": map[string]interface{}{},
+    			"allow_stdin":      false,
+    			"stop_on_error":    true,
+    		},
+    		Metadata: map[string]interface{}{},
+    		Buffers:  []interface{}{},
+    		Channel:  "shell",
+    	}
+
+    	data, _ := json.Marshal(msg)
+    	if err := ws.writeText(data); err != nil {
+    		return "", fmt.Errorf("send execute_request: %w", err)
+    	}
+
+    	var stdout strings.Builder
+    	for {
+    		raw, err := ws.readText()
+    		if err != nil {
+    			return stdout.String(), fmt.Errorf("read: %w", err)
+    		}
+
+    		var reply kernelMsg
+    		if err := json.Unmarshal(raw, &reply); err != nil {
+    			continue
+    		}
+
+    		switch reply.Header.MsgType {
+    		case "stream":
+    			if reply.Content["name"] == "stdout" {
+    				if text, ok := reply.Content["text"].(string); ok {
+    					stdout.WriteString(text)
+    				}
+    			}
+    		case "error":
+    			ename, _ := reply.Content["ename"].(string)
+    			evalue, _ := reply.Content["evalue"].(string)
+    			return "", fmt.Errorf("kernel error: %s: %s", ename, evalue)
+    		case "execute_reply":
+    			status, _ := reply.Content["status"].(string)
+    			if status == "error" {
+    				ename, _ := reply.Content["ename"].(string)
+    				evalue, _ := reply.Content["evalue"].(string)
+    				return "", fmt.Errorf("execution failed: %s: %s", ename, evalue)
+    			}
+    			return stdout.String(), nil
+    		}
+    	}
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test variables
+    // ---------------------------------------------------------------------------
+
+    var (
+    	serverURL        string
+    	expectedGPUCount int
+    	expectedNvlink   string
+    	devEnvKernelID   string
+    	diagResult       DiagResult
+    )
+
+    // ---------------------------------------------------------------------------
+    // Ginkgo
+    // ---------------------------------------------------------------------------
+
+    func TestDevEnv(t *testing.T) {
+    	RegisterFailHandler(Fail)
+    	RunSpecs(t, "Dev Environment Validation Suite")
+    }
+
+    var _ = BeforeSuite(func() {
+    	serverURL = os.Getenv("SERVER_URL")
+    	Expect(serverURL).NotTo(BeEmpty(), "SERVER_URL must be set")
+
+    	raw := os.Getenv("EXPECTED_GPU_COUNT")
+    	Expect(raw).NotTo(BeEmpty(), "EXPECTED_GPU_COUNT must be set")
+    	var err error
+    	expectedGPUCount, err = strconv.Atoi(raw)
+    	Expect(err).NotTo(HaveOccurred(), "EXPECTED_GPU_COUNT must be an integer")
+
+    	expectedNvlink = os.Getenv("EXPECTED_NVLINK")
+    	Expect(expectedNvlink).NotTo(BeEmpty(), "EXPECTED_NVLINK must be set")
+
+    	GinkgoWriter.Printf("Server URL: %s\n", serverURL)
+    	GinkgoWriter.Printf("Expected GPU count: %d\n", expectedGPUCount)
+    	GinkgoWriter.Printf("Expected NVLink: %s\n", expectedNvlink)
+    })
+
+    var _ = AfterSuite(func() {
+    	if devEnvKernelID != "" {
+    		shutdownKernel(serverURL, devEnvKernelID)
+    	}
+    })
+
+    const diagnosticCode = `import torch, json, subprocess
+
+    result = {}
+    result["gpu_count"] = torch.cuda.device_count()
+    result["devices"] = []
+    for i in range(torch.cuda.device_count()):
+        props = torch.cuda.get_device_properties(i)
+        result["devices"].append({
+            "name": props.name,
+            "total_memory_mb": props.total_memory // (1024 * 1024),
+            "major": props.major,
+            "minor": props.minor,
+            "multi_processor_count": props.multi_processor_count,
+        })
+
+    topo = subprocess.run(["nvidia-smi", "topo", "-m"], capture_output=True, text=True)
+    result["nvidia_smi_topo"] = topo.stdout
+
+    with open("/uat_workspace/result.txt", "w") as f:
+        json.dump(result, f, indent=2)
+
+    print("DIAG_OK")
+    `
+
+    var _ = Describe("Dev Environment Validation", Label("pass-fail"), Ordered, func() {
+
+    	It("should create a diagnostic notebook on the server", func() {
+    		notebook := map[string]interface{}{
+    			"type":   "notebook",
+    			"format": "json",
+    			"content": map[string]interface{}{
+    				"nbformat":       4,
+    				"nbformat_minor": 5,
+    				"metadata": map[string]interface{}{
+    					"kernelspec": map[string]interface{}{
+    						"display_name": "Python 3",
+    						"language":     "python",
+    						"name":         "python3",
+    					},
+    				},
+    				"cells": []map[string]interface{}{
+    					{
+    						"cell_type":       "code",
+    						"source":          diagnosticCode,
+    						"metadata":        map[string]interface{}{},
+    						"outputs":         []interface{}{},
+    						"execution_count": nil,
+    					},
+    					{
+    						"cell_type":       "code",
+    						"source":          "!nvidia-smi topo -m",
+    						"metadata":        map[string]interface{}{},
+    						"outputs":         []interface{}{},
+    						"execution_count": nil,
+    					},
+    				},
+    			},
+    		}
+
+    		err := jupyterPut(serverURL, "gpu-diagnostics.ipynb", notebook)
+    		Expect(err).NotTo(HaveOccurred(), "Failed to create notebook on Jupyter server")
+    		GinkgoWriter.Println("Created gpu-diagnostics.ipynb on server")
+    	})
+
+    	It("should start a kernel and execute the diagnostic code", func() {
+    		var err error
+    		devEnvKernelID, err = startKernel(serverURL)
+    		Expect(err).NotTo(HaveOccurred(), "Failed to start kernel")
+    		GinkgoWriter.Printf("Started kernel: %s\n", devEnvKernelID)
+
+    		output, err := executeOnKernel(serverURL, devEnvKernelID, diagnosticCode, 120*time.Second)
+    		Expect(err).NotTo(HaveOccurred(), "Failed to execute diagnostic code on kernel")
+    		Expect(output).To(ContainSubstring("DIAG_OK"),
+    			"Diagnostic code did not complete successfully, output: %s", output)
+    		GinkgoWriter.Println("Diagnostic code executed successfully")
+    	})
+
+    	It("should read and parse result.txt from the server", func() {
+    		body, err := jupyterGet(serverURL, "result.txt")
+    		Expect(err).NotTo(HaveOccurred(), "Failed to read result.txt from Jupyter server")
+
+    		var contents jupyterContents
+    		err = json.Unmarshal(body, &contents)
+    		Expect(err).NotTo(HaveOccurred(), "Failed to parse Jupyter API response")
+
+    		err = json.Unmarshal([]byte(contents.Content), &diagResult)
+    		Expect(err).NotTo(HaveOccurred(), "Failed to parse result.txt JSON")
+
+    		GinkgoWriter.Printf("Actual GPU count: %d\n", diagResult.GPUCount)
+    		GinkgoWriter.Printf("Device count: %d\n", len(diagResult.Devices))
+    	})
+
+    	It("should detect correct GPU count", func() {
+    		GinkgoWriter.Printf("GPU count: %d (expected: %d)\n", diagResult.GPUCount, expectedGPUCount)
+    		Expect(diagResult.GPUCount).To(Equal(expectedGPUCount),
+    			"GPU count mismatch: CUDA reports %d GPU(s) but the cluster config expects %d.",
+    			diagResult.GPUCount, expectedGPUCount)
+    	})
+
+    	It("should have correct NVLink width", func() {
+    		nvRe := regexp.MustCompile(`NV(\d+)`)
+    		var widths []string
+    		for _, line := range strings.Split(diagResult.NvidiaSmiTopo, "\n") {
+    			if !strings.HasPrefix(line, "GPU") {
+    				continue
+    			}
+    			for _, match := range nvRe.FindAllString(line, -1) {
+    				widths = append(widths, match)
+    			}
+    		}
+    		Expect(widths).NotTo(BeEmpty(),
+    			"No NVLink connections found in nvidia-smi topo output.")
+    		for _, w := range widths {
+    			GinkgoWriter.Printf("NVLink connection: %s (expected: %s)\n", w, expectedNvlink)
+    			Expect(w).To(Equal(expectedNvlink),
+    				"NVLink width mismatch: detected '%s' but expected '%s'.", w, expectedNvlink)
+    		}
+    	})
+
+    	It("should report all GPU devices", func() {
+    		Expect(diagResult.Devices).To(HaveLen(expectedGPUCount),
+    			"Device list length mismatch: got %d devices but expected %d.",
+    			len(diagResult.Devices), expectedGPUCount)
+    		for i, dev := range diagResult.Devices {
+    			GinkgoWriter.Printf("GPU %d: %s (%d MB)\n", i, dev.Name, dev.TotalMemoryMB)
+    		}
+    	})
+    })
+
+  kserve_test.go: |
+    // Assisted by Claude Opus 4.6
+    package test
+
+    import (
+    	"bytes"
+    	"encoding/json"
+    	"fmt"
+    	"io"
+    	"net/http"
+    	"os"
+    	"testing"
+    	"time"
+
+    	. "github.com/onsi/ginkgo/v2"
+    	. "github.com/onsi/gomega"
+    )
+
+    var (
+    	serviceURL string
+    	modelName  string
+    )
+
+    func TestKServe(t *testing.T) {
+    	RegisterFailHandler(Fail)
+    	RunSpecs(t, "KServe InferenceService Suite")
+    }
+
+    var _ = BeforeSuite(func() {
+    	serviceURL = os.Getenv("SERVICE_URL")
+    	modelName = os.Getenv("MODEL_NAME")
+
+    	if serviceURL != "" {
+    		GinkgoWriter.Printf("Service: %s\n", serviceURL)
+    	}
+    })
+
+    var _ = Describe("KServe InferenceService", Label("pass-fail"), func() {
+
+    	It("should become available within 10 minutes", func() {
+    		Expect(serviceURL).NotTo(BeEmpty(), "SERVICE_URL must be set")
+
+    		timeout := 10 * time.Minute
+    		interval := 15 * time.Second
+    		deadline := time.Now().Add(timeout)
+
+    		for time.Now().Before(deadline) {
+    			resp, err := http.Get(fmt.Sprintf("%s/health", serviceURL))
+    			if err == nil {
+    				resp.Body.Close()
+    				if resp.StatusCode == http.StatusOK {
+    					GinkgoWriter.Printf("Endpoint available after %v\n",
+    						timeout-time.Until(deadline))
+    					return
+    				}
+    			}
+    			time.Sleep(interval)
+    		}
+    		Fail(fmt.Sprintf("endpoint %s/health not available after %v", serviceURL, timeout))
+    	})
+
+    	It("should have model loaded", func() {
+    		resp, err := http.Get(fmt.Sprintf("%s/v1/models", serviceURL))
+    		Expect(err).NotTo(HaveOccurred())
+    		defer resp.Body.Close()
+    		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+    		var result map[string]interface{}
+    		Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
+    		data, ok := result["data"].([]interface{})
+    		Expect(ok).To(BeTrue(), "response missing 'data' field")
+    		Expect(data).NotTo(BeEmpty(), "no models loaded")
+    	})
+
+    	It("should serve inference requests", func() {
+    		Expect(modelName).NotTo(BeEmpty(), "MODEL_NAME must be set")
+
+    		body := map[string]interface{}{
+    			"model":      modelName,
+    			"prompt":     "Hello",
+    			"max_tokens": 8,
+    		}
+    		payload, err := json.Marshal(body)
+    		Expect(err).NotTo(HaveOccurred())
+
+    		resp, err := http.Post(
+    			fmt.Sprintf("%s/v1/completions", serviceURL),
+    			"application/json",
+    			bytes.NewReader(payload),
+    		)
+    		Expect(err).NotTo(HaveOccurred())
+    		defer resp.Body.Close()
+
+    		respBody, err := io.ReadAll(resp.Body)
+    		Expect(err).NotTo(HaveOccurred())
+    		Expect(resp.StatusCode).To(Equal(http.StatusOK),
+    			"inference failed (%d): %s", resp.StatusCode, string(respBody))
+
+    		var result map[string]interface{}
+    		Expect(json.Unmarshal(respBody, &result)).To(Succeed())
+    		choices, ok := result["choices"].([]interface{})
+    		Expect(ok).To(BeTrue(), "response missing 'choices'")
+    		Expect(choices).NotTo(BeEmpty(), "empty choices in response")
+    	})
+    })
+
+  guidellm_test.go: |
+    // Assisted by Claude Opus 4.6
+    package test
+
+    import (
+    	"encoding/json"
+    	"fmt"
+    	"net/http"
+    	"os"
+    	"os/exec"
+    	"path/filepath"
+    	"testing"
+
+    	. "github.com/onsi/ginkgo/v2"
+    	. "github.com/onsi/gomega"
+    )
+
+    type BenchmarksFile struct {
+    	Benchmarks []Benchmark `json:"benchmarks"`
+    }
+
+    type Benchmark struct {
+    	Metrics BenchmarkMetrics `json:"metrics"`
+    }
+
+    type BenchmarkMetrics struct {
+    	OutputTokensPerSecond MetricGroup `json:"output_tokens_per_second"`
+    	RequestLatency        MetricGroup `json:"request_latency"`
+    }
+
+    type MetricGroup struct {
+    	Successful MetricStats `json:"successful"`
+    }
+
+    type MetricStats struct {
+    	Mean   float64 `json:"mean"`
+    	Median float64 `json:"median"`
+    	Min    float64 `json:"min"`
+    	Max    float64 `json:"max"`
+    }
+
+    var (
+    	serverURL  string
+    	resultsDir string
+    )
+
+    func TestGuidellm(t *testing.T) {
+    	RegisterFailHandler(Fail)
+    	RunSpecs(t, "guidellm Benchmark Suite")
+    }
+
+    var _ = BeforeSuite(func() {
+    	serverURL = os.Getenv("SERVER_URL")
+    	Expect(serverURL).NotTo(BeEmpty(), "SERVER_URL must be set")
+
+    	resultsDir = os.Getenv("RESULTS_DIR")
+    	Expect(resultsDir).NotTo(BeEmpty(), "RESULTS_DIR must be set")
+
+    	GinkgoWriter.Printf("Server: %s\n", serverURL)
+    	GinkgoWriter.Printf("Results: %s\n", resultsDir)
+    })
+
+    var _ = Describe("vLLM Inference Server", func() {
+
+    	Describe("Health Check", Label("pass-fail"), func() {
+    		It("should return healthy status", func() {
+    			resp, err := http.Get(fmt.Sprintf("%s/health", serverURL))
+    			Expect(err).NotTo(HaveOccurred())
+    			defer resp.Body.Close()
+    			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+    		})
+    	})
+
+    	Describe("Model Endpoint", Label("pass-fail"), func() {
+    		It("should list available models", func() {
+    			resp, err := http.Get(fmt.Sprintf("%s/v1/models", serverURL))
+    			Expect(err).NotTo(HaveOccurred())
+    			defer resp.Body.Close()
+    			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+    			var result map[string]interface{}
+    			err = json.NewDecoder(resp.Body).Decode(&result)
+    			Expect(err).NotTo(HaveOccurred())
+
+    			data, ok := result["data"].([]interface{})
+    			Expect(ok).To(BeTrue(), "response missing 'data' field")
+    			Expect(data).NotTo(BeEmpty(), "no models available")
+    		})
+    	})
+
+    	Describe("Benchmark Execution", Label("quantitative"), func() {
+    		It("should execute benchmark successfully", func() {
+    			Expect(os.MkdirAll(resultsDir, 0755)).To(Succeed())
+
+    			sweepCmdJSON := os.Getenv("SWEEP_COMMAND")
+    			Expect(sweepCmdJSON).NotTo(BeEmpty(), "SWEEP_COMMAND must be set")
+
+    			var sweepCmd []string
+    			err := json.Unmarshal([]byte(sweepCmdJSON), &sweepCmd)
+    			Expect(err).NotTo(HaveOccurred(), "Failed to parse SWEEP_COMMAND")
+    			Expect(sweepCmd).NotTo(BeEmpty(), "SWEEP_COMMAND is empty")
+
+    			cmd := exec.Command(sweepCmd[0], sweepCmd[1:]...)
+    			cmd.Env = append(os.Environ(), "HOME=/tmp")
+
+    			cmd.Stdout = os.Stdout
+    			cmd.Stderr = os.Stderr
+
+    			err = cmd.Run()
+    			Expect(err).NotTo(HaveOccurred(), "benchmark failed")
+    		})
+
+    		It("should generate result files", func() {
+    			files, err := os.ReadDir(resultsDir)
+    			Expect(err).NotTo(HaveOccurred())
+    			Expect(files).NotTo(BeEmpty(), "no result files generated")
+    		})
+
+    		It("should collect benchmark results", func() {
+    			benchmarkFile := filepath.Join(resultsDir, "benchmarks.json")
+    			data, err := os.ReadFile(benchmarkFile)
+    			Expect(err).NotTo(HaveOccurred(), "benchmarks.json not found in %s", resultsDir)
+
+    			var benchmarks BenchmarksFile
+    			Expect(json.Unmarshal(data, &benchmarks)).To(Succeed())
+    			Expect(benchmarks.Benchmarks).NotTo(BeEmpty(), "no benchmarks in results")
+
+    			b := benchmarks.Benchmarks[0]
+    			throughput := b.Metrics.OutputTokensPerSecond.Successful
+    			latency := b.Metrics.RequestLatency.Successful
+
+    			GinkgoWriter.Printf("=== Benchmark Results ===\n")
+    			GinkgoWriter.Printf("Throughput (tok/s): mean=%.2f median=%.2f min=%.2f max=%.2f\n",
+    				throughput.Mean, throughput.Median, throughput.Min, throughput.Max)
+    			GinkgoWriter.Printf("Latency (s):        mean=%.4f median=%.4f min=%.4f max=%.4f\n",
+    				latency.Mean, latency.Median, latency.Min, latency.Max)
+
+    			AddReportEntry("throughput_mean_tok_s", throughput.Mean)
+    			AddReportEntry("throughput_median_tok_s", throughput.Median)
+    			AddReportEntry("latency_mean_s", latency.Mean)
+    			AddReportEntry("latency_median_s", latency.Median)
+    		})
+    	})
+
+    })
+
+  inference-perf_test.go: |
+    // Assisted by Claude Opus 4.6
+    package test
+
+    import (
+    	"encoding/json"
+    	"fmt"
+    	"net/http"
+    	"os"
+    	"os/exec"
+    	"path/filepath"
+    	"testing"
+
+    	. "github.com/onsi/ginkgo/v2"
+    	. "github.com/onsi/gomega"
+    )
+
+    type LifecycleReport struct {
+    	Successes SuccessMetrics `json:"successes"`
+    	Failures  FailureMetrics `json:"failures"`
+    }
+
+    type SuccessMetrics struct {
+    	Count      int               `json:"count"`
+    	Latency    LatencyMetrics    `json:"latency"`
+    	Throughput ThroughputMetrics `json:"throughput"`
+    }
+
+    type LatencyMetrics struct {
+    	RequestLatency   *LatencyStats `json:"request_latency"`
+    	TimeToFirstToken *LatencyStats `json:"time_to_first_token"`
+    	TimePerOutputTkn *LatencyStats `json:"time_per_output_token"`
+    }
+
+    type LatencyStats struct {
+    	Mean   float64 `json:"mean"`
+    	Median float64 `json:"median"`
+    	Min    float64 `json:"min"`
+    	Max    float64 `json:"max"`
+    }
+
+    type ThroughputMetrics struct {
+    	RequestsPerSec     float64 `json:"requests_per_sec"`
+    	OutputTokensPerSec float64 `json:"output_tokens_per_sec"`
+    	TotalTokensPerSec  float64 `json:"total_tokens_per_sec"`
+    }
+
+    type FailureMetrics struct {
+    	Count int `json:"count"`
+    }
+
+    var (
+    	serverURL  string
+    	resultsDir string
+    )
+
+    func TestInferencePerf(t *testing.T) {
+    	RegisterFailHandler(Fail)
+    	RunSpecs(t, "inference-perf Benchmark Suite")
+    }
+
+    var _ = BeforeSuite(func() {
+    	serverURL = os.Getenv("SERVER_URL")
+    	Expect(serverURL).NotTo(BeEmpty(), "SERVER_URL must be set")
+
+    	resultsDir = os.Getenv("RESULTS_DIR")
+    	Expect(resultsDir).NotTo(BeEmpty(), "RESULTS_DIR must be set")
+
+    	GinkgoWriter.Printf("Server: %s\n", serverURL)
+    	GinkgoWriter.Printf("Results: %s\n", resultsDir)
+    })
+
+    var _ = Describe("inference-perf", func() {
+
+    	Describe("Health Check", Label("pass-fail"), func() {
+    		It("should return healthy status", func() {
+    			resp, err := http.Get(fmt.Sprintf("%s/health", serverURL))
+    			Expect(err).NotTo(HaveOccurred())
+    			defer resp.Body.Close()
+    			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+    		})
+    	})
+
+    	Describe("Model Endpoint", Label("pass-fail"), func() {
+    		It("should list available models", func() {
+    			resp, err := http.Get(fmt.Sprintf("%s/v1/models", serverURL))
+    			Expect(err).NotTo(HaveOccurred())
+    			defer resp.Body.Close()
+    			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+    			var result map[string]interface{}
+    			err = json.NewDecoder(resp.Body).Decode(&result)
+    			Expect(err).NotTo(HaveOccurred())
+
+    			data, ok := result["data"].([]interface{})
+    			Expect(ok).To(BeTrue(), "response missing 'data' field")
+    			Expect(data).NotTo(BeEmpty(), "no models available")
+    		})
+    	})
+
+    	Describe("Benchmark Execution", Label("quantitative"), func() {
+    		It("should execute benchmark successfully", func() {
+    			Expect(os.MkdirAll(resultsDir, 0755)).To(Succeed())
+
+    			sweepCmdJSON := os.Getenv("SWEEP_COMMAND")
+    			Expect(sweepCmdJSON).NotTo(BeEmpty(), "SWEEP_COMMAND must be set")
+
+    			var sweepCmd []string
+    			err := json.Unmarshal([]byte(sweepCmdJSON), &sweepCmd)
+    			Expect(err).NotTo(HaveOccurred(), "Failed to parse SWEEP_COMMAND")
+    			Expect(sweepCmd).NotTo(BeEmpty(), "SWEEP_COMMAND is empty")
+
+    			cmd := exec.Command(sweepCmd[0], sweepCmd[1:]...)
+    			cmd.Env = append(os.Environ(), "HOME=/tmp")
+    			cmd.Stdout = os.Stdout
+    			cmd.Stderr = os.Stderr
+
+    			err = cmd.Run()
+    			Expect(err).NotTo(HaveOccurred(), "inference-perf failed")
+    		})
+
+    		It("should generate result files", func() {
+    			files, err := os.ReadDir(resultsDir)
+    			Expect(err).NotTo(HaveOccurred())
+    			Expect(files).NotTo(BeEmpty(), "no result files generated")
+    		})
+
+    		It("should collect benchmark results", func() {
+    			reportFile := filepath.Join(resultsDir, "summary_lifecycle_metrics.json")
+    			data, err := os.ReadFile(reportFile)
+    			Expect(err).NotTo(HaveOccurred(), "summary_lifecycle_metrics.json not found in %s", resultsDir)
+
+    			var report LifecycleReport
+    			Expect(json.Unmarshal(data, &report)).To(Succeed())
+
+    			Expect(report.Successes.Count).To(BeNumerically(">", 0), "no successful requests")
+    			Expect(report.Failures.Count).To(Equal(0), "unexpected request failures")
+
+    			Expect(report.Successes.Latency.RequestLatency).NotTo(BeNil(), "missing request_latency")
+    			Expect(report.Successes.Latency.RequestLatency.Mean).To(BeNumerically(">", 0))
+    			Expect(report.Successes.Throughput.TotalTokensPerSec).To(BeNumerically(">", 0))
+
+    			GinkgoWriter.Printf("=== inference-perf Results ===\n")
+    			GinkgoWriter.Printf("Successes: %d  Failures: %d\n", report.Successes.Count, report.Failures.Count)
+    			GinkgoWriter.Printf("Throughput (tok/s): total=%.2f output=%.2f requests=%.4f\n",
+    				report.Successes.Throughput.TotalTokensPerSec,
+    				report.Successes.Throughput.OutputTokensPerSec,
+    				report.Successes.Throughput.RequestsPerSec)
+    			GinkgoWriter.Printf("Request Latency (s): mean=%.4f median=%.4f\n",
+    				report.Successes.Latency.RequestLatency.Mean,
+    				report.Successes.Latency.RequestLatency.Median)
+    			if report.Successes.Latency.TimeToFirstToken != nil {
+    				GinkgoWriter.Printf("TTFT (s): mean=%.4f median=%.4f\n",
+    					report.Successes.Latency.TimeToFirstToken.Mean,
+    					report.Successes.Latency.TimeToFirstToken.Median)
+    				AddReportEntry("ttft_mean_s", report.Successes.Latency.TimeToFirstToken.Mean)
+    			}
+    			if report.Successes.Latency.TimePerOutputTkn != nil {
+    				GinkgoWriter.Printf("TPOT (s): mean=%.4f median=%.4f\n",
+    					report.Successes.Latency.TimePerOutputTkn.Mean,
+    					report.Successes.Latency.TimePerOutputTkn.Median)
+    				AddReportEntry("tpot_mean_s", report.Successes.Latency.TimePerOutputTkn.Mean)
+    			}
+
+    			AddReportEntry("throughput_total_tokens_per_sec", report.Successes.Throughput.TotalTokensPerSec)
+    			AddReportEntry("throughput_output_tokens_per_sec", report.Successes.Throughput.OutputTokensPerSec)
+    			AddReportEntry("request_latency_mean_s", report.Successes.Latency.RequestLatency.Mean)
+    		})
+    	})
+
+    })
+
+  chunked-prefill_test.go: |
+    // Assisted by Claude Opus 4.6
+    package test
+
+    import (
+    	"bytes"
+    	"encoding/json"
+    	"fmt"
+    	"io"
+    	"net/http"
+    	"os"
+    	"os/exec"
+    	"path/filepath"
+    	"testing"
+
+    	. "github.com/onsi/ginkgo/v2"
+    	. "github.com/onsi/gomega"
+    )
+
+    type LifecycleReport struct {
+    	Successes SuccessMetrics `json:"successes"`
+    	Failures  FailureMetrics `json:"failures"`
+    }
+
+    type SuccessMetrics struct {
+    	Count      int               `json:"count"`
+    	Latency    LatencyMetrics    `json:"latency"`
+    	Throughput ThroughputMetrics `json:"throughput"`
+    }
+
+    type LatencyMetrics struct {
+    	RequestLatency   *LatencyStats `json:"request_latency"`
+    	TimeToFirstToken *LatencyStats `json:"time_to_first_token"`
+    	TimePerOutputTkn *LatencyStats `json:"time_per_output_token"`
+    }
+
+    type LatencyStats struct {
+    	Mean   float64 `json:"mean"`
+    	Median float64 `json:"median"`
+    	Min    float64 `json:"min"`
+    	Max    float64 `json:"max"`
+    }
+
+    type ThroughputMetrics struct {
+    	RequestsPerSec     float64 `json:"requests_per_sec"`
+    	OutputTokensPerSec float64 `json:"output_tokens_per_sec"`
+    	TotalTokensPerSec  float64 `json:"total_tokens_per_sec"`
+    }
+
+    type FailureMetrics struct {
+    	Count int `json:"count"`
+    }
+
+    var (
+    	serverURL  string
+    	modelName  string
+    	resultsDir string
+    )
+
+    func TestChunkedPrefill(t *testing.T) {
+    	RegisterFailHandler(Fail)
+    	RunSpecs(t, "Chunked Prefill Suite (all-GPU TP)")
+    }
+
+    var _ = BeforeSuite(func() {
+    	serverURL = os.Getenv("SERVER_URL")
+    	modelName = os.Getenv("MODEL_NAME")
+    	resultsDir = os.Getenv("RESULTS_DIR")
+
+    	if serverURL != "" {
+    		GinkgoWriter.Printf("Server:    %s\n", serverURL)
+    	}
+    })
+
+    func healthCheck(url string) {
+    	resp, err := http.Get(fmt.Sprintf("%s/health", url))
+    	Expect(err).NotTo(HaveOccurred())
+    	defer resp.Body.Close()
+    	Expect(resp.StatusCode).To(Equal(http.StatusOK))
+    }
+
+    func checkModels(url string) {
+    	resp, err := http.Get(fmt.Sprintf("%s/v1/models", url))
+    	Expect(err).NotTo(HaveOccurred())
+    	defer resp.Body.Close()
+    	Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+    	var result map[string]interface{}
+    	Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
+    	data, ok := result["data"].([]interface{})
+    	Expect(ok).To(BeTrue(), "response missing 'data' field")
+    	Expect(data).NotTo(BeEmpty(), "no models loaded")
+    }
+
+    func runInference(url, model string) {
+    	body := map[string]interface{}{
+    		"model":      model,
+    		"prompt":     "Hello",
+    		"max_tokens": 8,
+    	}
+    	payload, err := json.Marshal(body)
+    	Expect(err).NotTo(HaveOccurred())
+
+    	resp, err := http.Post(
+    		fmt.Sprintf("%s/v1/completions", url),
+    		"application/json",
+    		bytes.NewReader(payload),
+    	)
+    	Expect(err).NotTo(HaveOccurred())
+    	defer resp.Body.Close()
+
+    	respBody, err := io.ReadAll(resp.Body)
+    	Expect(err).NotTo(HaveOccurred())
+    	Expect(resp.StatusCode).To(Equal(http.StatusOK),
+    		"inference failed (%d): %s", resp.StatusCode, string(respBody))
+
+    	var result map[string]interface{}
+    	Expect(json.Unmarshal(respBody, &result)).To(Succeed())
+    	choices, ok := result["choices"].([]interface{})
+    	Expect(ok).To(BeTrue(), "response missing 'choices'")
+    	Expect(choices).NotTo(BeEmpty(), "empty choices in response")
+    }
+
+    var _ = Describe("Chunked Prefill", Label("pass-fail"), func() {
+
+    	Describe("vLLM Server", func() {
+    		It("should be healthy", func() {
+    			Expect(serverURL).NotTo(BeEmpty(), "SERVER_URL must be set")
+    			healthCheck(serverURL)
+    		})
+    		It("should have model loaded", func() {
+    			checkModels(serverURL)
+    		})
+    		It("should serve inference requests", func() {
+    			runInference(serverURL, modelName)
+    		})
+    	})
+
+    })
+
+    var _ = Describe("Chunked Prefill Stress Test", Label("quantitative"), func() {
+
+    	Describe("Server Health", func() {
+    		It("should be reachable", func() {
+    			Expect(serverURL).NotTo(BeEmpty(), "SERVER_URL must be set")
+    			healthCheck(serverURL)
+    		})
+    	})
+
+    	Describe("Stress Test", func() {
+    		It("should execute stress test successfully", func() {
+    			Expect(resultsDir).NotTo(BeEmpty(), "RESULTS_DIR must be set")
+    			Expect(os.MkdirAll(resultsDir, 0755)).To(Succeed())
+
+    			sweepCmdJSON := os.Getenv("SWEEP_COMMAND")
+    			Expect(sweepCmdJSON).NotTo(BeEmpty(), "SWEEP_COMMAND must be set")
+
+    			var sweepCmd []string
+    			err := json.Unmarshal([]byte(sweepCmdJSON), &sweepCmd)
+    			Expect(err).NotTo(HaveOccurred(), "Failed to parse SWEEP_COMMAND")
+    			Expect(sweepCmd).NotTo(BeEmpty(), "SWEEP_COMMAND is empty")
+
+    			cmd := exec.Command(sweepCmd[0], sweepCmd[1:]...)
+    			cmd.Env = append(os.Environ(), "HOME=/tmp")
+    			cmd.Stdout = os.Stdout
+    			cmd.Stderr = os.Stderr
+
+    			err = cmd.Run()
+    			Expect(err).NotTo(HaveOccurred(), "inference-perf stress test failed")
+    		})
+
+    		It("should generate result files", func() {
+    			files, err := os.ReadDir(resultsDir)
+    			Expect(err).NotTo(HaveOccurred())
+    			Expect(files).NotTo(BeEmpty(), "no result files generated")
+    		})
+
+    		It("should report stress test results", func() {
+    			reportFile := filepath.Join(resultsDir, "summary_lifecycle_metrics.json")
+    			data, err := os.ReadFile(reportFile)
+    			Expect(err).NotTo(HaveOccurred(),
+    				"summary_lifecycle_metrics.json not found in %s", resultsDir)
+
+    			var report LifecycleReport
+    			Expect(json.Unmarshal(data, &report)).To(Succeed())
+
+    			totalRequests := report.Successes.Count + report.Failures.Count
+    			Expect(totalRequests).To(BeNumerically(">", 0), "no requests completed")
+    			Expect(report.Successes.Count).To(BeNumerically(">", 0), "no successful requests")
+
+    			Expect(report.Successes.Latency.RequestLatency).NotTo(BeNil(),
+    				"missing request_latency")
+    			Expect(report.Successes.Latency.RequestLatency.Mean).To(
+    				BeNumerically(">", 0))
+
+    			GinkgoWriter.Printf("=== Stress Test Results ===\n")
+    			GinkgoWriter.Printf("Requests: %d success, %d failed (%.1f%% failure rate)\n",
+    				report.Successes.Count, report.Failures.Count,
+    				float64(report.Failures.Count)/float64(totalRequests)*100)
+    			GinkgoWriter.Printf("Throughput (tok/s): total=%.2f output=%.2f requests=%.4f\n",
+    				report.Successes.Throughput.TotalTokensPerSec,
+    				report.Successes.Throughput.OutputTokensPerSec,
+    				report.Successes.Throughput.RequestsPerSec)
+    			GinkgoWriter.Printf("Request Latency (s): mean=%.4f median=%.4f\n",
+    				report.Successes.Latency.RequestLatency.Mean,
+    				report.Successes.Latency.RequestLatency.Median)
+    			if report.Successes.Latency.TimeToFirstToken != nil {
+    				GinkgoWriter.Printf("TTFT (s): mean=%.4f median=%.4f\n",
+    					report.Successes.Latency.TimeToFirstToken.Mean,
+    					report.Successes.Latency.TimeToFirstToken.Median)
+    				AddReportEntry("ttft_mean_s",
+    					report.Successes.Latency.TimeToFirstToken.Mean)
+    			}
+    			if report.Successes.Latency.TimePerOutputTkn != nil {
+    				GinkgoWriter.Printf("TPOT (s): mean=%.4f median=%.4f\n",
+    					report.Successes.Latency.TimePerOutputTkn.Mean,
+    					report.Successes.Latency.TimePerOutputTkn.Median)
+    				AddReportEntry("tpot_mean_s",
+    					report.Successes.Latency.TimePerOutputTkn.Mean)
+    			}
+
+    			AddReportEntry("throughput_total_tokens_per_sec",
+    				report.Successes.Throughput.TotalTokensPerSec)
+    			AddReportEntry("throughput_output_tokens_per_sec",
+    				report.Successes.Throughput.OutputTokensPerSec)
+    			AddReportEntry("request_latency_mean_s",
+    				report.Successes.Latency.RequestLatency.Mean)
+    			AddReportEntry("stress_success_count", report.Successes.Count)
+    			AddReportEntry("stress_failure_count", report.Failures.Count)
+    		})
+    	})
+
+    })
+
+  llm-d-local_test.go: |
+    // Assisted by Claude Opus 4.6
+    package test
+
+    import (
+    	"bytes"
+    	"encoding/json"
+    	"fmt"
+    	"io"
+    	"net/http"
+    	"os"
+    	"os/exec"
+    	"path/filepath"
+    	"testing"
+
+    	. "github.com/onsi/ginkgo/v2"
+    	. "github.com/onsi/gomega"
+    )
+
+    type LifecycleReport struct {
+    	Successes SuccessMetrics `json:"successes"`
+    	Failures  FailureMetrics `json:"failures"`
+    }
+
+    type SuccessMetrics struct {
+    	Count      int               `json:"count"`
+    	Latency    LatencyMetrics    `json:"latency"`
+    	Throughput ThroughputMetrics `json:"throughput"`
+    }
+
+    type LatencyMetrics struct {
+    	RequestLatency   *LatencyStats `json:"request_latency"`
+    	TimeToFirstToken *LatencyStats `json:"time_to_first_token"`
+    	TimePerOutputTkn *LatencyStats `json:"time_per_output_token"`
+    }
+
+    type LatencyStats struct {
+    	Mean   float64 `json:"mean"`
+    	Median float64 `json:"median"`
+    	Min    float64 `json:"min"`
+    	Max    float64 `json:"max"`
+    }
+
+    type ThroughputMetrics struct {
+    	RequestsPerSec     float64 `json:"requests_per_sec"`
+    	OutputTokensPerSec float64 `json:"output_tokens_per_sec"`
+    	TotalTokensPerSec  float64 `json:"total_tokens_per_sec"`
+    }
+
+    type FailureMetrics struct {
+    	Count int `json:"count"`
+    }
+
+    var (
+    	prefillURL string
+    	decodeURL  string
+    	gatewayURL string
+    	modelName  string
+    	prefillTp  string
+    	decodeTp   string
+    	serverURL  string
+    	resultsDir string
+    )
+
+    func TestLlmDLocal(t *testing.T) {
+    	RegisterFailHandler(Fail)
+    	RunSpecs(t, "llm-d Colocated P/D Suite (NVLink/cuda_ipc)")
+    }
+
+    var _ = BeforeSuite(func() {
+    	prefillURL = os.Getenv("PREFILL_URL")
+    	decodeURL = os.Getenv("DECODE_URL")
+    	gatewayURL = os.Getenv("GATEWAY_URL")
+    	modelName = os.Getenv("MODEL_NAME")
+    	prefillTp = os.Getenv("PREFILL_TP")
+    	decodeTp = os.Getenv("DECODE_TP")
+    	serverURL = os.Getenv("SERVER_URL")
+    	resultsDir = os.Getenv("RESULTS_DIR")
+    	if prefillURL != "" {
+    		GinkgoWriter.Printf("Prefill:   %s (TP=%s)\n", prefillURL, prefillTp)
+    	}
+    	if decodeURL != "" {
+    		GinkgoWriter.Printf("Decode:    %s (TP=%s)\n", decodeURL, decodeTp)
+    	}
+    	if gatewayURL != "" {
+    		GinkgoWriter.Printf("Gateway:   %s [nginx header-injector]\n", gatewayURL)
+    	}
+    	if serverURL != "" {
+    		GinkgoWriter.Printf("Server:    %s\n", serverURL)
+    	}
+    })
+
+    func healthCheck(url string) {
+    	resp, err := http.Get(fmt.Sprintf("%s/health", url))
+    	Expect(err).NotTo(HaveOccurred())
+    	defer resp.Body.Close()
+    	Expect(resp.StatusCode).To(Equal(http.StatusOK))
+    }
+
+    func checkModels(url string) {
+    	resp, err := http.Get(fmt.Sprintf("%s/v1/models", url))
+    	Expect(err).NotTo(HaveOccurred())
+    	defer resp.Body.Close()
+    	Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+    	var result map[string]interface{}
+    	Expect(json.NewDecoder(resp.Body).Decode(&result)).To(Succeed())
+    	data, ok := result["data"].([]interface{})
+    	Expect(ok).To(BeTrue(), "response missing 'data' field")
+    	Expect(data).NotTo(BeEmpty(), "no models loaded")
+    }
+
+    func runInference(url, model string) {
+    	body := map[string]interface{}{
+    		"model":      model,
+    		"prompt":     "Hello",
+    		"max_tokens": 8,
+    	}
+    	payload, err := json.Marshal(body)
+    	Expect(err).NotTo(HaveOccurred())
+
+    	resp, err := http.Post(
+    		fmt.Sprintf("%s/v1/completions", url),
+    		"application/json",
+    		bytes.NewReader(payload),
+    	)
+    	Expect(err).NotTo(HaveOccurred())
+    	defer resp.Body.Close()
+
+    	respBody, err := io.ReadAll(resp.Body)
+    	Expect(err).NotTo(HaveOccurred())
+    	Expect(resp.StatusCode).To(Equal(http.StatusOK),
+    		"inference failed (%d): %s", resp.StatusCode, string(respBody))
+
+    	var result map[string]interface{}
+    	Expect(json.Unmarshal(respBody, &result)).To(Succeed())
+    	choices, ok := result["choices"].([]interface{})
+    	Expect(ok).To(BeTrue(), "response missing 'choices'")
+    	Expect(choices).NotTo(BeEmpty(), "empty choices in response")
+    }
+
+
+    var _ = Describe("llm-d Colocated P/D", Label("pass-fail"), func() {
+
+    	Describe("Prefill Server", func() {
+    		It("should be healthy", func() {
+    			Expect(prefillURL).NotTo(BeEmpty(), "PREFILL_URL must be set")
+    			healthCheck(prefillURL)
+    		})
+    		It("should have model loaded", func() {
+    			checkModels(prefillURL)
+    		})
+    		It("should serve inference requests", func() {
+    			runInference(prefillURL, modelName)
+    		})
+    	})
+
+    	Describe("Decode Server", func() {
+    		It("should be healthy", func() {
+    			Expect(decodeURL).NotTo(BeEmpty(), "DECODE_URL must be set")
+    			healthCheck(decodeURL)
+    		})
+    		It("should have model loaded", func() {
+    			checkModels(decodeURL)
+    		})
+    		It("should serve inference requests", func() {
+    			runInference(decodeURL, modelName)
+    		})
+    	})
+
+    	Describe("Gateway (nginx header-injector → sidecar → P/D)", func() {
+    		It("should route disaggregated inference", func() {
+    			Expect(gatewayURL).NotTo(BeEmpty(), "GATEWAY_URL must be set")
+    			runInference(gatewayURL, modelName)
+    		})
+    	})
+
+    	Describe("GPU Configuration", func() {
+    		It("should report split", func() {
+    			Expect(prefillTp).NotTo(BeEmpty(), "PREFILL_TP must be set")
+    			GinkgoWriter.Printf("=== GPU Split ===\n")
+    			GinkgoWriter.Printf("Prefill: TP=%s (%s GPUs)\n", prefillTp, prefillTp)
+    			GinkgoWriter.Printf("Decode:  TP=%s (%s GPUs)\n", decodeTp, decodeTp)
+    			AddReportEntry("prefill_tp", prefillTp)
+    			AddReportEntry("decode_tp", decodeTp)
+    		})
+    	})
+
+    })
+
+    var _ = Describe("llm-d NVLink Stress Test", Label("quantitative"), func() {
+
+    	Describe("Gateway Health", func() {
+    		It("should be reachable through nginx gateway", func() {
+    			Expect(serverURL).NotTo(BeEmpty(), "SERVER_URL must be set")
+    			healthCheck(serverURL)
+    		})
+    	})
+
+    	Describe("NVLink Bandwidth Stress", func() {
+    		It("should execute stress test successfully", func() {
+    			Expect(resultsDir).NotTo(BeEmpty(), "RESULTS_DIR must be set")
+    			Expect(os.MkdirAll(resultsDir, 0755)).To(Succeed())
+
+    			sweepCmdJSON := os.Getenv("SWEEP_COMMAND")
+    			Expect(sweepCmdJSON).NotTo(BeEmpty(), "SWEEP_COMMAND must be set")
+
+    			var sweepCmd []string
+    			err := json.Unmarshal([]byte(sweepCmdJSON), &sweepCmd)
+    			Expect(err).NotTo(HaveOccurred(), "Failed to parse SWEEP_COMMAND")
+    			Expect(sweepCmd).NotTo(BeEmpty(), "SWEEP_COMMAND is empty")
+
+    			cmd := exec.Command(sweepCmd[0], sweepCmd[1:]...)
+    			cmd.Env = append(os.Environ(), "HOME=/tmp")
+    			cmd.Stdout = os.Stdout
+    			cmd.Stderr = os.Stderr
+
+    			err = cmd.Run()
+    			Expect(err).NotTo(HaveOccurred(), "inference-perf stress test failed")
+    		})
+
+    		It("should generate result files", func() {
+    			files, err := os.ReadDir(resultsDir)
+    			Expect(err).NotTo(HaveOccurred())
+    			Expect(files).NotTo(BeEmpty(), "no result files generated")
+    		})
+
+    		It("should report stress test results", func() {
+    			reportFile := filepath.Join(resultsDir, "summary_lifecycle_metrics.json")
+    			data, err := os.ReadFile(reportFile)
+    			Expect(err).NotTo(HaveOccurred(),
+    				"summary_lifecycle_metrics.json not found in %s", resultsDir)
+
+    			var report LifecycleReport
+    			Expect(json.Unmarshal(data, &report)).To(Succeed())
+
+    			totalRequests := report.Successes.Count + report.Failures.Count
+    			Expect(totalRequests).To(BeNumerically(">", 0), "no requests completed")
+    			Expect(report.Successes.Count).To(BeNumerically(">", 0), "no successful requests")
+
+    			Expect(report.Successes.Latency.RequestLatency).NotTo(BeNil(),
+    				"missing request_latency")
+    			Expect(report.Successes.Latency.RequestLatency.Mean).To(
+    				BeNumerically(">", 0))
+
+    			GinkgoWriter.Printf("=== NVLink Stress Test Results ===\n")
+    			GinkgoWriter.Printf("Requests: %d success, %d failed (%.1f%% failure rate)\n",
+    				report.Successes.Count, report.Failures.Count,
+    				float64(report.Failures.Count)/float64(totalRequests)*100)
+    			GinkgoWriter.Printf("Throughput (tok/s): total=%.2f output=%.2f requests=%.4f\n",
+    				report.Successes.Throughput.TotalTokensPerSec,
+    				report.Successes.Throughput.OutputTokensPerSec,
+    				report.Successes.Throughput.RequestsPerSec)
+    			GinkgoWriter.Printf("Request Latency (s): mean=%.4f median=%.4f\n",
+    				report.Successes.Latency.RequestLatency.Mean,
+    				report.Successes.Latency.RequestLatency.Median)
+    			if report.Successes.Latency.TimeToFirstToken != nil {
+    				GinkgoWriter.Printf("TTFT (s): mean=%.4f median=%.4f\n",
+    					report.Successes.Latency.TimeToFirstToken.Mean,
+    					report.Successes.Latency.TimeToFirstToken.Median)
+    				AddReportEntry("ttft_mean_s",
+    					report.Successes.Latency.TimeToFirstToken.Mean)
+    			}
+    			if report.Successes.Latency.TimePerOutputTkn != nil {
+    				GinkgoWriter.Printf("TPOT (s): mean=%.4f median=%.4f\n",
+    					report.Successes.Latency.TimePerOutputTkn.Mean,
+    					report.Successes.Latency.TimePerOutputTkn.Median)
+    				AddReportEntry("tpot_mean_s",
+    					report.Successes.Latency.TimePerOutputTkn.Mean)
+    			}
+
+    			AddReportEntry("throughput_total_tokens_per_sec",
+    				report.Successes.Throughput.TotalTokensPerSec)
+    			AddReportEntry("throughput_output_tokens_per_sec",
+    				report.Successes.Throughput.OutputTokensPerSec)
+    			AddReportEntry("request_latency_mean_s",
+    				report.Successes.Latency.RequestLatency.Mean)
+    			AddReportEntry("stress_success_count", report.Successes.Count)
+    			AddReportEntry("stress_failure_count", report.Failures.Count)
+    		})
+    	})
+
+    })
+
+  ping_test.go: |
+    // Assisted by Claude Opus 4.6
+    package test
+
+    import (
+    	"net/http"
+    	"os"
+    	"testing"
+    	"time"
+
+    	. "github.com/onsi/ginkgo/v2"
+    	. "github.com/onsi/gomega"
+    )
+
+    var (
+    	ownURL       string
+    	otherShort   string
+    	otherFQDN    string
+    )
+
+    func TestPing(t *testing.T) {
+    	RegisterFailHandler(Fail)
+    	RunSpecs(t, "Ping Cross-Namespace Connectivity Suite")
+    }
+
+    var _ = BeforeSuite(func() {
+    	ownURL = os.Getenv("OWN_URL")
+    	otherShort = os.Getenv("OTHER_SHORT_URL")
+    	otherFQDN = os.Getenv("OTHER_FQDN_URL")
+    })
+
+    func httpReachable(url string, timeout time.Duration) bool {
+    	client := &http.Client{Timeout: timeout}
+    	resp, err := client.Get(url)
+    	if err != nil {
+    		return false
+    	}
+    	resp.Body.Close()
+    	return resp.StatusCode == http.StatusOK
+    }
+
+    func connectivityChecks() {
+    	It("should reach own service", func() {
+    		Expect(ownURL).NotTo(BeEmpty(), "OWN_URL must be set")
+    		Expect(httpReachable(ownURL, 10*time.Second)).To(BeTrue(),
+    			"own service at %s is not reachable", ownURL)
+    	})
+
+    	It("should not reach other service by short name", func() {
+    		Expect(otherShort).NotTo(BeEmpty(), "OTHER_SHORT_URL must be set")
+    		Expect(httpReachable(otherShort, 5*time.Second)).To(BeFalse(),
+    			"other service at %s should not be reachable by short name", otherShort)
+    	})
+
+    	It("should not reach other service by FQDN", func() {
+    		Expect(otherFQDN).NotTo(BeEmpty(), "OTHER_FQDN_URL must be set")
+    		Expect(httpReachable(otherFQDN, 5*time.Second)).To(BeFalse(),
+    			"other service at %s should not be reachable by FQDN", otherFQDN)
+    	})
+    }
+
+    var _ = Describe("Project Namespace Connectivity", Label("project-check"), func() {
+    	connectivityChecks()
+    })
+
+    var _ = Describe("Peer Namespace Connectivity", Label("peer-check"), func() {
+    	connectivityChecks()
+    })
+
+  peer-load-high_test.go: |
+    package test
+
+    import (
+    	"encoding/json"
+    	"os"
+    	"os/exec"
+    	"path/filepath"
+    	"testing"
+
+    	. "github.com/onsi/ginkgo/v2"
+    	. "github.com/onsi/gomega"
+    )
+
+    type LifecycleReport struct {
+    	Successes SuccessMetrics `json:"successes"`
+    	Failures  FailureMetrics `json:"failures"`
+    }
+
+    type SuccessMetrics struct {
+    	Count      int               `json:"count"`
+    	Latency    LatencyMetrics    `json:"latency"`
+    	Throughput ThroughputMetrics `json:"throughput"`
+    }
+
+    type LatencyMetrics struct {
+    	RequestLatency   *LatencyStats `json:"request_latency"`
+    	TimeToFirstToken *LatencyStats `json:"time_to_first_token"`
+    	TimePerOutputTkn *LatencyStats `json:"time_per_output_token"`
+    }
+
+    type LatencyStats struct {
+    	Mean   float64 `json:"mean"`
+    	Median float64 `json:"median"`
+    	Min    float64 `json:"min"`
+    	Max    float64 `json:"max"`
+    }
+
+    type ThroughputMetrics struct {
+    	RequestsPerSec     float64 `json:"requests_per_sec"`
+    	OutputTokensPerSec float64 `json:"output_tokens_per_sec"`
+    	TotalTokensPerSec  float64 `json:"total_tokens_per_sec"`
+    }
+
+    type FailureMetrics struct {
+    	Count int `json:"count"`
+    }
+
+    var (
+    	serverURL  string
+    	resultsDir string
+    )
+
+    func TestPeerLoadHigh(t *testing.T) {
+    	RegisterFailHandler(Fail)
+    	RunSpecs(t, "Multi-Tenant Contention Benchmark Suite")
+    }
+
+    var _ = BeforeSuite(func() {
+    	serverURL = os.Getenv("SERVER_URL")
+    	Expect(serverURL).NotTo(BeEmpty(), "SERVER_URL must be set")
+
+    	resultsDir = os.Getenv("RESULTS_DIR")
+    	Expect(resultsDir).NotTo(BeEmpty(), "RESULTS_DIR must be set")
+
+    	GinkgoWriter.Printf("Server: %s\n", serverURL)
+    	GinkgoWriter.Printf("Results: %s\n", resultsDir)
+    })
+
+    var _ = Describe("peer-load-high", func() {
+
+    	Describe("Benchmark Under Contention", Label("quantitative"), func() {
+    		It("should execute benchmark successfully", func() {
+    			Expect(os.MkdirAll(resultsDir, 0755)).To(Succeed())
+
+    			sweepCmdJSON := os.Getenv("SWEEP_COMMAND")
+    			Expect(sweepCmdJSON).NotTo(BeEmpty(), "SWEEP_COMMAND must be set")
+
+    			var sweepCmd []string
+    			err := json.Unmarshal([]byte(sweepCmdJSON), &sweepCmd)
+    			Expect(err).NotTo(HaveOccurred(), "Failed to parse SWEEP_COMMAND")
+    			Expect(sweepCmd).NotTo(BeEmpty(), "SWEEP_COMMAND is empty")
+
+    			cmd := exec.Command(sweepCmd[0], sweepCmd[1:]...)
+    			cmd.Env = append(os.Environ(), "HOME=/tmp")
+    			cmd.Stdout = os.Stdout
+    			cmd.Stderr = os.Stderr
+
+    			err = cmd.Run()
+    			Expect(err).NotTo(HaveOccurred(), "inference-perf failed")
+    		})
+
+    		It("should generate result files", func() {
+    			files, err := os.ReadDir(resultsDir)
+    			Expect(err).NotTo(HaveOccurred())
+    			Expect(files).NotTo(BeEmpty(), "no result files generated")
+    		})
+
+    		It("should collect benchmark results", func() {
+    			reportFile := filepath.Join(resultsDir, "summary_lifecycle_metrics.json")
+    			data, err := os.ReadFile(reportFile)
+    			Expect(err).NotTo(HaveOccurred(), "summary_lifecycle_metrics.json not found in %s", resultsDir)
+
+    			var report LifecycleReport
+    			Expect(json.Unmarshal(data, &report)).To(Succeed())
+
+    			Expect(report.Successes.Count).To(BeNumerically(">", 0), "no successful requests")
+    			Expect(report.Failures.Count).To(Equal(0), "unexpected request failures")
+
+    			Expect(report.Successes.Latency.RequestLatency).NotTo(BeNil(), "missing request_latency")
+    			Expect(report.Successes.Latency.RequestLatency.Mean).To(BeNumerically(">", 0))
+    			Expect(report.Successes.Throughput.TotalTokensPerSec).To(BeNumerically(">", 0))
+
+    			GinkgoWriter.Printf("=== Contention Benchmark Results ===\n")
+    			GinkgoWriter.Printf("Successes: %d  Failures: %d\n", report.Successes.Count, report.Failures.Count)
+    			GinkgoWriter.Printf("Throughput (tok/s): total=%.2f output=%.2f requests=%.4f\n",
+    				report.Successes.Throughput.TotalTokensPerSec,
+    				report.Successes.Throughput.OutputTokensPerSec,
+    				report.Successes.Throughput.RequestsPerSec)
+    			GinkgoWriter.Printf("Request Latency (s): mean=%.4f median=%.4f\n",
+    				report.Successes.Latency.RequestLatency.Mean,
+    				report.Successes.Latency.RequestLatency.Median)
+    			if report.Successes.Latency.TimeToFirstToken != nil {
+    				GinkgoWriter.Printf("TTFT (s): mean=%.4f median=%.4f\n",
+    					report.Successes.Latency.TimeToFirstToken.Mean,
+    					report.Successes.Latency.TimeToFirstToken.Median)
+    				AddReportEntry("ttft_mean_s", report.Successes.Latency.TimeToFirstToken.Mean)
+    			}
+    			if report.Successes.Latency.TimePerOutputTkn != nil {
+    				GinkgoWriter.Printf("TPOT (s): mean=%.4f median=%.4f\n",
+    					report.Successes.Latency.TimePerOutputTkn.Mean,
+    					report.Successes.Latency.TimePerOutputTkn.Median)
+    				AddReportEntry("tpot_mean_s", report.Successes.Latency.TimePerOutputTkn.Mean)
+    			}
+
+    			AddReportEntry("throughput_total_tokens_per_sec", report.Successes.Throughput.TotalTokensPerSec)
+    			AddReportEntry("throughput_output_tokens_per_sec", report.Successes.Throughput.OutputTokensPerSec)
+    			AddReportEntry("request_latency_mean_s", report.Successes.Latency.RequestLatency.Mean)
+    		})
+    	})
+
+    })
+
+  peer-load-low_test.go: |
+    package test
+
+    import (
+    	"encoding/json"
+    	"os"
+    	"os/exec"
+    	"path/filepath"
+    	"testing"
+
+    	. "github.com/onsi/ginkgo/v2"
+    	. "github.com/onsi/gomega"
+    )
+
+    type LifecycleReport struct {
+    	Successes SuccessMetrics `json:"successes"`
+    	Failures  FailureMetrics `json:"failures"`
+    }
+
+    type SuccessMetrics struct {
+    	Count      int               `json:"count"`
+    	Latency    LatencyMetrics    `json:"latency"`
+    	Throughput ThroughputMetrics `json:"throughput"`
+    }
+
+    type LatencyMetrics struct {
+    	RequestLatency   *LatencyStats `json:"request_latency"`
+    	TimeToFirstToken *LatencyStats `json:"time_to_first_token"`
+    	TimePerOutputTkn *LatencyStats `json:"time_per_output_token"`
+    }
+
+    type LatencyStats struct {
+    	Mean   float64 `json:"mean"`
+    	Median float64 `json:"median"`
+    	Min    float64 `json:"min"`
+    	Max    float64 `json:"max"`
+    }
+
+    type ThroughputMetrics struct {
+    	RequestsPerSec     float64 `json:"requests_per_sec"`
+    	OutputTokensPerSec float64 `json:"output_tokens_per_sec"`
+    	TotalTokensPerSec  float64 `json:"total_tokens_per_sec"`
+    }
+
+    type FailureMetrics struct {
+    	Count int `json:"count"`
+    }
+
+    var (
+    	serverURL  string
+    	resultsDir string
+    )
+
+    func TestPeerLoadLow(t *testing.T) {
+    	RegisterFailHandler(Fail)
+    	RunSpecs(t, "Multi-Tenant Contention Benchmark Suite")
+    }
+
+    var _ = BeforeSuite(func() {
+    	serverURL = os.Getenv("SERVER_URL")
+    	Expect(serverURL).NotTo(BeEmpty(), "SERVER_URL must be set")
+
+    	resultsDir = os.Getenv("RESULTS_DIR")
+    	Expect(resultsDir).NotTo(BeEmpty(), "RESULTS_DIR must be set")
+
+    	GinkgoWriter.Printf("Server: %s\n", serverURL)
+    	GinkgoWriter.Printf("Results: %s\n", resultsDir)
+    })
+
+    var _ = Describe("peer-load-low", func() {
+
+    	Describe("Benchmark Under Contention", Label("quantitative"), func() {
+    		It("should execute benchmark successfully", func() {
+    			Expect(os.MkdirAll(resultsDir, 0755)).To(Succeed())
+
+    			sweepCmdJSON := os.Getenv("SWEEP_COMMAND")
+    			Expect(sweepCmdJSON).NotTo(BeEmpty(), "SWEEP_COMMAND must be set")
+
+    			var sweepCmd []string
+    			err := json.Unmarshal([]byte(sweepCmdJSON), &sweepCmd)
+    			Expect(err).NotTo(HaveOccurred(), "Failed to parse SWEEP_COMMAND")
+    			Expect(sweepCmd).NotTo(BeEmpty(), "SWEEP_COMMAND is empty")
+
+    			cmd := exec.Command(sweepCmd[0], sweepCmd[1:]...)
+    			cmd.Env = append(os.Environ(), "HOME=/tmp")
+    			cmd.Stdout = os.Stdout
+    			cmd.Stderr = os.Stderr
+
+    			err = cmd.Run()
+    			Expect(err).NotTo(HaveOccurred(), "inference-perf failed")
+    		})
+
+    		It("should generate result files", func() {
+    			files, err := os.ReadDir(resultsDir)
+    			Expect(err).NotTo(HaveOccurred())
+    			Expect(files).NotTo(BeEmpty(), "no result files generated")
+    		})
+
+    		It("should collect benchmark results", func() {
+    			reportFile := filepath.Join(resultsDir, "summary_lifecycle_metrics.json")
+    			data, err := os.ReadFile(reportFile)
+    			Expect(err).NotTo(HaveOccurred(), "summary_lifecycle_metrics.json not found in %s", resultsDir)
+
+    			var report LifecycleReport
+    			Expect(json.Unmarshal(data, &report)).To(Succeed())
+
+    			Expect(report.Successes.Count).To(BeNumerically(">", 0), "no successful requests")
+    			Expect(report.Failures.Count).To(Equal(0), "unexpected request failures")
+
+    			Expect(report.Successes.Latency.RequestLatency).NotTo(BeNil(), "missing request_latency")
+    			Expect(report.Successes.Latency.RequestLatency.Mean).To(BeNumerically(">", 0))
+    			Expect(report.Successes.Throughput.TotalTokensPerSec).To(BeNumerically(">", 0))
+
+    			GinkgoWriter.Printf("=== Contention Benchmark Results ===\n")
+    			GinkgoWriter.Printf("Successes: %d  Failures: %d\n", report.Successes.Count, report.Failures.Count)
+    			GinkgoWriter.Printf("Throughput (tok/s): total=%.2f output=%.2f requests=%.4f\n",
+    				report.Successes.Throughput.TotalTokensPerSec,
+    				report.Successes.Throughput.OutputTokensPerSec,
+    				report.Successes.Throughput.RequestsPerSec)
+    			GinkgoWriter.Printf("Request Latency (s): mean=%.4f median=%.4f\n",
+    				report.Successes.Latency.RequestLatency.Mean,
+    				report.Successes.Latency.RequestLatency.Median)
+    			if report.Successes.Latency.TimeToFirstToken != nil {
+    				GinkgoWriter.Printf("TTFT (s): mean=%.4f median=%.4f\n",
+    					report.Successes.Latency.TimeToFirstToken.Mean,
+    					report.Successes.Latency.TimeToFirstToken.Median)
+    				AddReportEntry("ttft_mean_s", report.Successes.Latency.TimeToFirstToken.Mean)
+    			}
+    			if report.Successes.Latency.TimePerOutputTkn != nil {
+    				GinkgoWriter.Printf("TPOT (s): mean=%.4f median=%.4f\n",
+    					report.Successes.Latency.TimePerOutputTkn.Mean,
+    					report.Successes.Latency.TimePerOutputTkn.Median)
+    				AddReportEntry("tpot_mean_s", report.Successes.Latency.TimePerOutputTkn.Mean)
+    			}
+
+    			AddReportEntry("throughput_total_tokens_per_sec", report.Successes.Throughput.TotalTokensPerSec)
+    			AddReportEntry("throughput_output_tokens_per_sec", report.Successes.Throughput.OutputTokensPerSec)
+    			AddReportEntry("request_latency_mean_s", report.Successes.Latency.RequestLatency.Mean)
+    		})
+    	})
+
+    })
+
+  cluster.yaml: |
+    # Assisted by Claude Opus 4.8
+    apiVersion: uat.openshift.io/v1
+    kind: ClusterTest
+    metadata:
+      name: oac-prod-uat
+    spec:
+      compliance:
+        fipsEnabled: false
+
+      nodes:
+        - name: moc-r4pcc02u05
+          componentValidation:
+            sanity:
+              nvidia.com/gpu: 4
+              nvidia.com/gpu.memory: 81559
+              cpu: 512
+              resourceNames:
+                nvidia.com/gpu: NVIDIA-H100-80GB-HBM3
+                cpu: AMD EPYC 9754 128-Core Processor
+              nvlink: NV6
+              nvlinkTopology: all-to-all
+              nvlinkP2pBandwidth: 150
+              pcieWidth: 16
+              pcieGen: 5
+              memory: 1512Gi
+              numaNodes: 2
+            ideal:
+              cudaDriverVersion: "595.91.07"
+              gpuPowerLimit: 700
+              gpuPersistenceMode: true
+              kernel: 5.14.0-570.78.1.el9_6.x86_64
+              hugepages: 8000Mi
+              cpuFreqGovernor: performance
+              cpuIdleDriver: acpi_idle
+              cpuIdleGovernor: menu
+              # AMD acpi_idle C2 is equivalent to Intel C1E (low single-digit us wake-up)
+              cpuCStatesEnabled: [POLL, C1, C2]
+              transparentHugepages: madvise
+
+        - name: moc-r4pcc02u09
+          componentValidation:
+            sanity:
+              nvidia.com/gpu: 4
+              nvidia.com/gpu.memory: 81559
+              cpu: 512
+              resourceNames:
+                nvidia.com/gpu: NVIDIA-H100-80GB-HBM3
+                cpu: AMD EPYC 9754 128-Core Processor
+              nvlink: NV6
+              nvlinkTopology: all-to-all
+              nvlinkP2pBandwidth: 150
+              pcieWidth: 16
+              pcieGen: 5
+              memory: 1512Gi
+              numaNodes: 2
+            ideal:
+              cudaDriverVersion: "595.91.07"
+              gpuPowerLimit: 700
+              gpuPersistenceMode: true
+              kernel: 5.14.0-570.78.1.el9_6.x86_64
+              hugepages: 8000Mi
+              cpuFreqGovernor: performance
+              cpuIdleDriver: acpi_idle
+              cpuIdleGovernor: menu
+              # AMD acpi_idle C2 is equivalent to Intel C1E (low single-digit us wake-up)
+              cpuCStatesEnabled: [POLL, C1, C2]
+              transparentHugepages: madvise
+
+
+      namespace: uat-project
+      peerNamespace: uat-peer
+
+      storage:
+        pvc: uat-project-storage
+        basePath: uat/results
+        models:
+          pvc: uat-models
+
+      peerStorage:
+        pvc: uat-peer-storage
+        basePath: uat/results
+        models:
+          pvc: uat-models
+
+  test_suite.yaml: |
+    # Assisted by Claude Opus 4.6
+    apiVersion: uat.openshift.io/v1
+    kind: TestSuite
+    metadata:
+      name: inference-validation-suite
+      version: v0.0.1
+    spec:
+      tests:
+        # preflight
+        - name: platform-check
+          scope: project
+          onFailure: continue
+        - name: component
+          scope: node
+          onFailure: continue
+        - name: iperf3
+          scope: cluster
+          onFailure: continue
+          placement:
+            setType: permutation
+            setSize: 2
+            setSelection: all
+            setCutoff: 0
+        - name: dev-env
+          scope: node
+          onFailure: continue
+          timeout: 600
+        # operator
+        - name: kserve
+          scope: project
+          onFailure: continue
+          timeout: 900
+        # single-gpu-performance
+        - name: guidellm
+          scope: node
+          onFailure: abort
+          timeout: 1200
+        - name: inference-perf
+          scope: node
+          onFailure: abort
+          timeout: 1200
+        # multi-gpu-performance
+        - name: chunked-prefill
+          scope: node
+          onFailure: abort
+          timeout: 900
+        - name: llm-d-local
+          scope: node
+          onFailure: abort
+          timeout: 900
+        # multi-tenancy
+        - name: ping
+          scope: project
+          onFailure: continue
+        - name: peer-load-high
+          scope: node
+          onFailure: continue
+          timeout: 1800
+        - name: peer-load-low
+          scope: node
+          onFailure: continue
+          timeout: 1800
+
+  build.sh: |
+    #!/bin/bash
+    # Assisted by Claude Opus 4.6
+    set -e
+
+    export HOME=/tmp
+    export GOCACHE=/tmp/go-cache
+    export GOPATH=/tmp/gopath
+    export CGO_ENABLED=0
+    export PATH="$PATH:$GOPATH/bin"
+
+    cp /src/cluster.yaml /uat_workspace/cluster.yaml
+    echo "Copied cluster.yaml to workspace"
+
+    echo "Building platform-check test binary..."
+    mkdir -p /uat_workspace/platform-check
+    cp /src/platform-check_test.go /uat_workspace/platform-check/test_test.go
+    cp /src/cluster.yaml /uat_workspace/platform-check/cluster.yaml
+    cd /uat_workspace/platform-check
+    go mod init test
+    go mod edit -require github.com/onsi/ginkgo/v2@v2.32.0
+    go mod tidy
+    go mod download
+    go run github.com/onsi/ginkgo/v2/ginkgo build -r .
+    mv *.test test.bin
+    chmod +x test.bin
+    ls -lh test.bin
+    echo "Built platform-check/test.bin"
+
+    echo "Building component test binary..."
+    mkdir -p /uat_workspace/component
+    cp /src/component_test.go /uat_workspace/component/test_test.go
+    cp /src/cluster.yaml /uat_workspace/component/cluster.yaml
+    cd /uat_workspace/component
+    go mod init test
+    go mod edit -require github.com/onsi/ginkgo/v2@v2.32.0
+    go mod tidy
+    go mod download
+    go run github.com/onsi/ginkgo/v2/ginkgo build -r .
+    mv *.test test.bin
+    chmod +x test.bin
+    ls -lh test.bin
+    echo "Built component/test.bin"
+
+    echo "Building iperf3 test binary..."
+    mkdir -p /uat_workspace/iperf3
+    cp /src/iperf3_test.go /uat_workspace/iperf3/test_test.go
+    cp /src/cluster.yaml /uat_workspace/iperf3/cluster.yaml
+    cd /uat_workspace/iperf3
+    go mod init test
+    go mod edit -require github.com/onsi/ginkgo/v2@v2.32.0
+    go mod tidy
+    go mod download
+    go run github.com/onsi/ginkgo/v2/ginkgo build -r .
+    mv *.test test.bin
+    chmod +x test.bin
+    ls -lh test.bin
+    echo "Built iperf3/test.bin"
+
+    echo "Building dev-env test binary..."
+    mkdir -p /uat_workspace/dev-env
+    cp /src/dev-env_test.go /uat_workspace/dev-env/test_test.go
+    cp /src/cluster.yaml /uat_workspace/dev-env/cluster.yaml
+    cd /uat_workspace/dev-env
+    go mod init test
+    go mod edit -require github.com/onsi/ginkgo/v2@v2.32.0
+    go mod tidy
+    go mod download
+    go run github.com/onsi/ginkgo/v2/ginkgo build -r .
+    mv *.test test.bin
+    chmod +x test.bin
+    ls -lh test.bin
+    echo "Built dev-env/test.bin"
+
+    echo "Building kserve test binary..."
+    mkdir -p /uat_workspace/kserve
+    cp /src/kserve_test.go /uat_workspace/kserve/test_test.go
+    cp /src/cluster.yaml /uat_workspace/kserve/cluster.yaml
+    cd /uat_workspace/kserve
+    go mod init test
+    go mod edit -require github.com/onsi/ginkgo/v2@v2.32.0
+    go mod tidy
+    go mod download
+    go run github.com/onsi/ginkgo/v2/ginkgo build -r .
+    mv *.test test.bin
+    chmod +x test.bin
+    ls -lh test.bin
+    echo "Built kserve/test.bin"
+
+    echo "Building guidellm test binary..."
+    mkdir -p /uat_workspace/guidellm
+    cp /src/guidellm_test.go /uat_workspace/guidellm/test_test.go
+    cp /src/cluster.yaml /uat_workspace/guidellm/cluster.yaml
+    cd /uat_workspace/guidellm
+    go mod init test
+    go mod edit -require github.com/onsi/ginkgo/v2@v2.32.0
+    go mod tidy
+    go mod download
+    go run github.com/onsi/ginkgo/v2/ginkgo build -r .
+    mv *.test test.bin
+    chmod +x test.bin
+    ls -lh test.bin
+    echo "Built guidellm/test.bin"
+
+    echo "Building inference-perf test binary..."
+    mkdir -p /uat_workspace/inference-perf
+    cp /src/inference-perf_test.go /uat_workspace/inference-perf/test_test.go
+    cp /src/cluster.yaml /uat_workspace/inference-perf/cluster.yaml
+    cd /uat_workspace/inference-perf
+    go mod init test
+    go mod edit -require github.com/onsi/ginkgo/v2@v2.32.0
+    go mod tidy
+    go mod download
+    go run github.com/onsi/ginkgo/v2/ginkgo build -r .
+    mv *.test test.bin
+    chmod +x test.bin
+    ls -lh test.bin
+    echo "Built inference-perf/test.bin"
+
+    echo "Building chunked-prefill test binary..."
+    mkdir -p /uat_workspace/chunked-prefill
+    cp /src/chunked-prefill_test.go /uat_workspace/chunked-prefill/test_test.go
+    cp /src/cluster.yaml /uat_workspace/chunked-prefill/cluster.yaml
+    cd /uat_workspace/chunked-prefill
+    go mod init test
+    go mod edit -require github.com/onsi/ginkgo/v2@v2.32.0
+    go mod tidy
+    go mod download
+    go run github.com/onsi/ginkgo/v2/ginkgo build -r .
+    mv *.test test.bin
+    chmod +x test.bin
+    ls -lh test.bin
+    echo "Built chunked-prefill/test.bin"
+
+    echo "Building llm-d-local test binary..."
+    mkdir -p /uat_workspace/llm-d-local
+    cp /src/llm-d-local_test.go /uat_workspace/llm-d-local/test_test.go
+    cp /src/cluster.yaml /uat_workspace/llm-d-local/cluster.yaml
+    cd /uat_workspace/llm-d-local
+    go mod init test
+    go mod edit -require github.com/onsi/ginkgo/v2@v2.32.0
+    go mod tidy
+    go mod download
+    go run github.com/onsi/ginkgo/v2/ginkgo build -r .
+    mv *.test test.bin
+    chmod +x test.bin
+    ls -lh test.bin
+    echo "Built llm-d-local/test.bin"
+
+    echo "Building ping test binary..."
+    mkdir -p /uat_workspace/ping
+    cp /src/ping_test.go /uat_workspace/ping/test_test.go
+    cp /src/cluster.yaml /uat_workspace/ping/cluster.yaml
+    cd /uat_workspace/ping
+    go mod init test
+    go mod edit -require github.com/onsi/ginkgo/v2@v2.32.0
+    go mod tidy
+    go mod download
+    go run github.com/onsi/ginkgo/v2/ginkgo build -r .
+    mv *.test test.bin
+    chmod +x test.bin
+    ls -lh test.bin
+    echo "Built ping/test.bin"
+
+    echo "Building peer-load-high test binary..."
+    mkdir -p /uat_workspace/peer-load-high
+    cp /src/peer-load-high_test.go /uat_workspace/peer-load-high/test_test.go
+    cp /src/cluster.yaml /uat_workspace/peer-load-high/cluster.yaml
+    cd /uat_workspace/peer-load-high
+    go mod init test
+    go mod edit -require github.com/onsi/ginkgo/v2@v2.32.0
+    go mod tidy
+    go mod download
+    go run github.com/onsi/ginkgo/v2/ginkgo build -r .
+    mv *.test test.bin
+    chmod +x test.bin
+    ls -lh test.bin
+    echo "Built peer-load-high/test.bin"
+
+    echo "Building peer-load-low test binary..."
+    mkdir -p /uat_workspace/peer-load-low
+    cp /src/peer-load-low_test.go /uat_workspace/peer-load-low/test_test.go
+    cp /src/cluster.yaml /uat_workspace/peer-load-low/cluster.yaml
+    cd /uat_workspace/peer-load-low
+    go mod init test
+    go mod edit -require github.com/onsi/ginkgo/v2@v2.32.0
+    go mod tidy
+    go mod download
+    go run github.com/onsi/ginkgo/v2/ginkgo build -r .
+    mv *.test test.bin
+    chmod +x test.bin
+    ls -lh test.bin
+    echo "Built peer-load-low/test.bin"
+
+
+  aggregate.py: |
+    #!/usr/bin/env python3
+    # Assisted by Claude Opus 4.6
+    """Aggregate JUnit XML results into a summary JSON report."""
+
+    import json
+    import os
+    import sys
+    import xml.etree.ElementTree as ET
+
+
+    def parse_junit(path):
+        tree = ET.parse(path)
+        root = tree.getroot()
+
+        if root.tag == "testsuites":
+            suites = root.findall("testsuite")
+        elif root.tag == "testsuite":
+            suites = [root]
+        else:
+            return {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+
+        tests = failures = errors = skipped = 0
+        for suite in suites:
+            tests += int(suite.get("tests", 0))
+            failures += int(suite.get("failures", 0))
+            errors += int(suite.get("errors", 0))
+            skipped += int(suite.get("skipped", 0))
+
+        return {
+            "tests": tests,
+            "failures": failures,
+            "errors": errors,
+            "skipped": skipped,
+        }
+
+
+    def main():
+        if len(sys.argv) < 2:
+            print("Usage: aggregate.py <results-dir>", file=sys.stderr)
+            sys.exit(1)
+
+        results_dir = sys.argv[1]
+        report_dir = os.path.join(results_dir, "report")
+        os.makedirs(report_dir, exist_ok=True)
+
+        print(f"Aggregating results from {results_dir}")
+
+        totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+        entries = []
+
+        for dirpath, dirnames, filenames in os.walk(results_dir):
+            dirnames[:] = sorted(d for d in dirnames if d not in ("binaries", "report"))
+
+            if "junit.xml" not in filenames:
+                continue
+
+            rel_path = os.path.relpath(dirpath, results_dir)
+            if rel_path == ".":
+                continue
+
+            junit_path = os.path.join(dirpath, "junit.xml")
+            counts = parse_junit(junit_path)
+            for key in totals:
+                totals[key] += counts[key]
+
+            status = "failed" if counts["failures"] or counts["errors"] else "passed"
+            entries.append({"name": rel_path, **counts, "status": status})
+
+        overall = "failed" if totals["failures"] or totals["errors"] else "passed"
+        summary = {"status": overall, "totals": totals, "entries": entries}
+
+        summary_path = os.path.join(report_dir, "summary.json")
+        with open(summary_path, "w") as f:
+            json.dump(summary, f, indent=2)
+
+        print(f"Summary written to {summary_path}")
+        print(json.dumps(summary, indent=2))
+
+
+    if __name__ == "__main__":
+        main()
+

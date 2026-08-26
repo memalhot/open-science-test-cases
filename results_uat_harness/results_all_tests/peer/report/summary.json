@@ -1,0 +1,19 @@
+{
+  "status": "failed",
+  "totals": {
+    "tests": 7,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 3
+  },
+  "entries": [
+    {
+      "name": "t10-ping-peer-check",
+      "tests": 7,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 3,
+      "status": "failed"
+    }
+  ]
+}
