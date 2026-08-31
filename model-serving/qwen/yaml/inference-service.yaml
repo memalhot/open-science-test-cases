@@ -29,6 +29,10 @@ objects:
       predictor:
         maxReplicas: 1
         minReplicas: 1
+        tolerations:
+          - key: nvidia.com/gpu.product
+            operator: Exists
+            effect: NoSchedule
         model:
           modelFormat:
             name: vLLM
@@ -45,7 +49,3 @@ objects:
           storage:
             key: minio-data-connection
             path: ${MODEL_PATH}
-        tolerations:
-          - effect: NoSchedule
-            key: nvidia.com/gpu
-            operator: Exists
