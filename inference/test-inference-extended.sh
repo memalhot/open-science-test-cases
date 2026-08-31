@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT=${PROJECT:-mm-test}
-MODEL_NAME=${MODEL_NAME:-granite-model}
+MODEL_NAME=${MODEL_NAME:-qwen-model}
 MODEL_URL=${MODEL_URL:-}
 RESULTS_DIR=${RESULTS_DIR:-"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/results"}
 
