@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-PROJECT=${PROJECT:-mm-test}
+PROJECT=${PROJECT:-ajamias}
 AGENT_NAME=${AGENT_NAME:-test-agent}
 
 echo "=== Agent Deployment Script ==="
