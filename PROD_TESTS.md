@@ -1,0 +1,10 @@
+## Test Cases
+
+| Test Case | Description | Category | Completion | Notes | Link |
+|-----------|-------------|----------|------------|-------|------|
+| Model Serving | OpenShift deployment scripts and YAML manifests for deploying a model serving endpoint with vLLM, including ConfigMaps, Secrets, Services, and Routes | Model Serving | Done | Qwen model deployed | [model-serving/granite-model](https://github.com/memalhot/open-science-test-cases/tree/main/model-serving/granite-model) |
+| Inference Benchmark | Automated sweep benchmark using [inference-benchmarker](https://github.com/huggingface/inference-benchmarker) to detect max throughput and measure latency across request rates | Inference | Done | 5 benchmark runs completed for Qwen | [inference/benchmark.sh](https://github.com/memalhot/open-science-test-cases/tree/main/inference) |
+| Inference Tests | Manual curl-based inference tests covering chat completions, text completions, sequential and concurrent throughput | Inference | Done | Successfully inferenced with Qwen | [inference/test-inference.sh](https://github.com/memalhot/open-science-test-cases/tree/main/inference) |
+| Extended Inference Tests | Validation suite: content correctness, schema validation, determinism, streaming, error handling, latency SLO, stop sequences | Inference | Done | 35 out 35 passed for qwen model | [inference/test-inference-extended.sh](https://github.com/memalhot/open-science-test-cases/tree/main/inference) |
+| Component Checks | Validates operator health, DataScienceCluster readiness, GPU node labels, required pods, and networking for the target OpenShift cluster | Platform Readiness | Done | 23 passed, 0 failed | [component-checks](https://github.com/memalhot/open-science-test-cases/tree/main/component-checks) |
+| Negative / Failure-Mode Tests | Verifies that resource over-requests go Pending (not silently queued), pod deletions complete cleanly, and no workloads are stuck Terminating or orphaned Pending | Platform Readiness | Done | 7 passed, 0 failed | [component-checks/negative-tests.sh](https://github.com/memalhot/open-science-test-cases/tree/main/component-checks/negative-tests.sh) |
