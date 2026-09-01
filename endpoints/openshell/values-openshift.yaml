@@ -1,0 +1,71 @@
+# OpenShift-specific Helm values for NVIDIA OpenShell
+# Based on: https://github.com/NVIDIA/openshell/blob/main/deploy/helm/openshell/README.md#install-on-openshift
+
+# Disable TLS at gateway level (Route handles TLS termination)
+server:
+  disableTls: true
+
+  # Kubernetes driver configuration
+  drivers:
+    kubernetes:
+      # Auto-create per-workspace namespaces
+      workspaceMode: managed
+
+  # Sandbox configuration
+  sandboxNamespace: openshell-sandboxes
+  sandboxImage: "ghcr.io/nvidia/openshell-community/sandboxes/base:latest"
+  sandboxImagePullPolicy: Always
+
+  # Storage for workspaces
+  workspaceStorageClass: ""  # Use cluster default
+  workspaceDefaultStorageSize: "10Gi"
+
+  # Telemetry (disable for privacy)
+  telemetryEnabled: false
+
+# Pod security context - let OpenShift auto-assign
+podSecurityContext:
+  fsGroup: null
+
+# Container security context - let OpenShift auto-assign
+securityContext:
+  runAsUser: null
+
+# StatefulSet for SQLite default
+workload:
+  kind: statefulset
+
+# Single replica for SQLite (use deployment + PostgreSQL for HA)
+replicaCount: 1
+
+# Agent sandbox preflight check
+agentSandbox:
+  preflight:
+    enabled: true
+
+# Network policy (restricts sandbox SSH to gateway only)
+networkPolicy:
+  enabled: true
+
+# Resource limits
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "200m"
+  limits:
+    memory: "1Gi"
+    cpu: "1000m"
+
+# Persistence for SQLite database
+persistence:
+  enabled: true
+  size: 5Gi
+  # storageClass: ""  # Use default
+
+# Service configuration
+service:
+  type: ClusterIP
+  ports:
+    grpc: 8080
+    health: 8081
+    metrics: 9090
