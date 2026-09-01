@@ -6,9 +6,7 @@ metadata:
   name: test-agent
   labels:
     app: test-agent
-    kagenti.io/type: agent                    # Required for AgentCard creation
-    protocol.kagenti.io/a2a: "true"         # Agent-to-agent protocol support
-    kagenti.io/inject: enabled              # Enable sidecar injection
+    protocol.rossoctl.io/a2a: "true"         # Agent-to-agent protocol support
 spec:
   replicas: 1
   selector:
@@ -18,8 +16,7 @@ spec:
     metadata:
       labels:
         app: test-agent
-        kagenti.io/type: agent
-        protocol.kagenti.io/a2a: "true"
+        protocol.rossoctl.io/a2a: "true"
     spec:
       containers:
       - name: agent
@@ -122,11 +119,15 @@ spec:
 
 ---
 # AgentCard - auto-created by platform but shown here for reference
-apiVersion: kagenti.io/v1alpha1
+apiVersion: agent.rossoctl.dev/v1alpha1
 kind: AgentCard
 metadata:
   name: test-agent
 spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: test-agent
   displayName: "Test Agent"
   description: "Sample agent for testing deployment verification"
   capabilities:
@@ -147,11 +148,12 @@ spec:
 
 ---
 # AgentRuntime - manages sidecars and identity
-apiVersion: kagenti.io/v1alpha1
+apiVersion: agent.rossoctl.dev/v1alpha1
 kind: AgentRuntime
 metadata:
   name: test-agent
 spec:
+  type: agent
   targetRef:
     apiVersion: apps/v1
     kind: Deployment

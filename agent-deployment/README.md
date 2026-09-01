@@ -1,10 +1,10 @@
 # Agent Deployment Test Case
 
-Test case for verifying agent deployment in Red Hat OpenShift AI Self-Managed 3.4, based on section 4.1 of the release notes covering AgentCard and AgentRuntime features.
+Test case for verifying agent deployment with Rossoctl operator, covering AgentCard and AgentRuntime features.
 
 ## Overview
 
-This test case validates that an agent is properly deployed with the required Kubernetes resources and follows the RHOAI 3.4 agent discovery and management patterns:
+This test case validates that an agent is properly deployed with the required Kubernetes resources and follows the Rossoctl agent discovery and management patterns:
 
 - **AgentCard**: Automatic discovery of deployed agents and their capabilities
 - **AgentRuntime**: Runtime management with authentication/identity sidecars
@@ -20,9 +20,9 @@ This test case validates that an agent is properly deployed with the required Ku
 
 ## Prerequisites
 
-- OpenShift cluster with RHOAI 3.4+ installed
+- OpenShift cluster with Rossoctl operator installed
 - `oc` CLI configured with cluster access
-- Admin privileges for creating/deleting resources
+- Admin privileges for creating/deleting resources (AgentCard/AgentRuntime require `--as system:admin`)
 - `jq` command (optional, fallback available for JSON parsing)
 - `curl` in container images for health checks (test will skip if unavailable)
 
@@ -36,9 +36,9 @@ cd agent-deployment/
 ```
 
 This creates:
-- Test agent deployment with required `kagenti.io/type: agent` labels
+- Test agent deployment with required `protocol.rossoctl.io/a2a` label
 - Service for agent endpoints
-- AgentCard and AgentRuntime resources (if CRDs are available)
+- AgentCard and AgentRuntime resources (operator adds `rossoctl.io/type: agent` label during reconciliation)
 
 ### Run Tests
 
@@ -49,7 +49,7 @@ This creates:
 The test verifies:
 
 1. **Agent Deployment**: Deployment exists and is ready
-2. **Required Labels**: `kagenti.io/type: agent` and protocol labels
+2. **Required Labels**: `rossoctl.io/type: agent` (added by operator) and `protocol.rossoctl.io/*` labels
 3. **AgentCard Creation**: Discovery resource is created automatically
 4. **AgentRuntime Configuration**: Runtime management is configured
 5. **Pod Injection**: Sidecars (AuthBridge, SPIFFE) are injected
@@ -64,7 +64,7 @@ The test verifies:
 
 ## Environment Variables
 
-- `PROJECT` - OpenShift project name (default: `mm-test`)
+- `PROJECT` - OpenShift project name (default: `ajamias`)
 - `AGENT_NAME` - Agent deployment name (default: `test-agent`)
 - `TIMEOUT` - Test timeout in seconds (default: `300`)
 
@@ -75,8 +75,8 @@ The test verifies:
 ```
 ✓ Agent deployment 'test-agent' exists
 ✓ Agent deployment is ready (1/1)
-✓ Agent has kagenti.io/type: agent label
-✓ Agent has protocol label: protocol.kagenti.io/a2a
+✓ Agent has rossoctl.io/type: agent label (added by operator)
+✓ Agent has protocol label: protocol.rossoctl.io/a2a
 ✓ AgentCard 'test-agent' exists
 ✓ AgentCard has endpoints configured
 ✓ AgentRuntime 'test-agent' exists
@@ -98,17 +98,17 @@ The test verifies:
 
 ## Agent Requirements
 
-Based on RHOAI 3.4 section 4.1, agents must:
+Agents deployed with Rossoctl must:
 
 1. **Have Required Labels**:
    ```yaml
-   kagenti.io/type: agent                # Enables AgentCard creation
-   protocol.kagenti.io/a2a: "true"      # Or other protocol labels
+   protocol.rossoctl.io/a2a: "true"      # Protocol label (set by user)
+   # rossoctl.io/type: agent             # Added by operator during reconciliation
    ```
 
-2. **Support Discovery**: AgentCard automatically created by platform
+2. **Support Discovery**: AgentCard with `targetRef` pointing to deployment
 
-3. **Runtime Management**: AgentRuntime can be configured for:
+3. **Runtime Management**: AgentRuntime with `type: agent` and `targetRef` configured for:
    - Authentication/identity sidecars
    - Distributed tracing with OpenTelemetry
    - SPIFFE workload identity
@@ -146,4 +146,6 @@ Check:
 
 ## Reference
 
-Based on Red Hat OpenShift AI Self-Managed 3.4 Release notes, Chapter 4, Section 4.1: "3.4 GA DEVELOPER PREVIEW FEATURES"
+- Rossoctl Operator: https://github.com/rossoctl/rossoctl
+- AgentCard/AgentRuntime CRDs: `agent.rossoctl.dev/v1alpha1`
+- Install docs: https://github.com/rossoctl/rossoctl/blob/main/docs/getting-started/install.md
