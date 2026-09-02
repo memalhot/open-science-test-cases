@@ -8,10 +8,18 @@ The server speaks the OpenAI-compatible API. Model is served under the name
 
 ## 0. Get the endpoint URL
 
+The Route name depends on the serving mode it was deployed with (`lazy` uses
+`gemma4-vllm`; `kserve` uses `gemma4`):
+
+    # lazy (default):
     URL="https://$(oc get route gemma4-vllm -n eldritchjs-sandbox -o jsonpath='{.spec.host}')"
+    # kserve:
+    URL="https://$(oc get route gemma4 -n eldritchjs-sandbox -o jsonpath='{.spec.host}')"
     echo "$URL"
 
 (The router uses its default cert, so add `-k` to curl to skip cert validation.)
+Everything below is identical across modes — same OpenAI API, same `gemma-4`
+model name.
 
 ## 1. Is it alive? List the model
 
@@ -61,14 +69,20 @@ You'll see `data: {...}` SSE chunks, ending with `data: [DONE]`.
 
 ## 5. Confirm it's really running on the GPUs
 
+The pod label differs by mode (`lazy`: `app=gemma4-vllm`; `kserve`:
+`serving.kserve.io/inferenceservice=gemma4`):
+
+    # lazy:
     POD=$(oc get pod -l app=gemma4-vllm -n eldritchjs-sandbox -o jsonpath='{.items[0].metadata.name}')
+    # kserve:
+    POD=$(oc get pod -l serving.kserve.io/inferenceservice=gemma4 -n eldritchjs-sandbox -o jsonpath='{.items[0].metadata.name}')
     oc exec "$POD" -n eldritchjs-sandbox -- nvidia-smi
 
 You should see 2 H100s with the vLLM process resident and GPU memory in use.
 
 ## 6. Watch server logs / throughput
 
-    oc logs -f deploy/gemma4-vllm -n eldritchjs-sandbox
+    oc logs -f "$POD" -n eldritchjs-sandbox      # $POD from step 5 (both modes)
 
 vLLM logs per-request latency, tokens/s, and KV-cache usage.
 

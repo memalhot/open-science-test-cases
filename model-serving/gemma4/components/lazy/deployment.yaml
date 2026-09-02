@@ -10,6 +10,12 @@ metadata:
   labels: { app: gemma4-vllm }
 spec:
   replicas: 1
+  # A cold first run pulls the ~22GB image AND ~62GB of weights before the pod
+  # goes Ready — well past the 600s default. Without this, the Deployment is
+  # marked failed (Progressing=False) mid-download and `oc rollout status` in
+  # up.sh exits non-zero even though the pod comes up fine. Align it with the
+  # startup-probe budget / up.sh's rollout timeout.
+  progressDeadlineSeconds: 1800
   selector:
     matchLabels: { app: gemma4-vllm }
   template:

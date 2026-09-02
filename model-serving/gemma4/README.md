@@ -1,64 +1,152 @@
-# Gemma 4 vLLM serving — cluster validation
+# Gemma 4 vLLM serving on OpenShift
 
-Goal: prove this cluster can stand up a Gemma 4 model for inference serving.
-Scope: internal smoke test, **not** the customer deliverable. Single model,
-2×H100 (tensor-parallel), no encryption/auth.
+Stand up **Google Gemma 4 (`gemma-4-31B-it`)** for OpenAI-compatible inference on
+an OpenShift/RHOAI cluster with GPUs, serving with **vLLM** across 2× H100
+(tensor-parallel). One config file, three scripts (`up` / `test` / `down`), and a
+kustomize base that supports **two serving modes** off the same Pure storage.
 
-> Status: validated on `api-oac-prod` 2026-08-24 (PASS), then torn down.
-> Repeatable via `scripts/` (kustomize base + up/down/test). Full procedure and
-> success criteria: **TEST-PLAN.md**. Manual curl reference: **TESTING.md**.
+> **Status:** validated on `api-oac-prod` (MOC/NERC OAC), namespace
+> `eldritchjs-sandbox`. Both serving modes pass the full smoke test (models list,
+> chat completion, streaming, GPU residency) and are torn down after each run.
+> This is an internal cluster **smoke test**, not a hardened customer deliverable
+> (single model, no auth/encryption — `curl -k` against the default router cert).
 
-Target: namespace `eldritchjs-sandbox` on `api-oac-prod` (MOC/NERC OAC).
+This README is the whole picture at a glance. Two companion docs go deeper:
+- **TEST-PLAN.md** — the full procedure, prerequisites, success criteria, and the
+  record of issues hit and fixed. Read this to *run the validation properly*.
+- **TESTING.md** — hand-driven `curl`/OpenAI-client recipes for poking at a live
+  endpoint. Read this to *exercise an endpoint that's already up*.
 
-## What the pre-flight probe already confirmed
-- GPU pods schedule in this namespace and are NOT Kueue-gated (got an H100).
-- Egress to `huggingface.co` works (HTTP 200).
-- Weight-CDN egress still UNCONFIRMED (see pre-flight step 0).
+---
 
-## Model: google/gemma-4-31B-it (VERIFIED on HF)
-- License **Apache 2.0**, **UNGATED** — no license click-through, no gated-repo
-  token permission needed. HF token is optional (kept only for rate limits).
-- 30.7B dense params, BF16 (~62GB weights). Too tight for one 80GB H100 once KV
-  cache is added -> served with **tensor-parallel across 2x H100**.
-- Repo id is **case-sensitive**: capital `B` in `31B`.
-- Alternative if we ever want it on a single GPU: the QAT checkpoint
-  `google/gemma-4-31B-it-qat-w4a16-ct` (compressed-tensors for vLLM, ~1/4 size).
+## What it does
 
-## Open items to resolve BEFORE applying
-1. **HF token (optional)** — create the `hf-token` secret (see
-   02-hf-secret.example.yaml). Not strictly required for this public Apache
-   model, but improves download reliability/rate limits. A plain fine-grained
-   READ token is enough; no gated permission needed.
-2. ~~vLLM image tag~~ RESOLVED — pinned to `vllm/vllm-openai:gemma4` (CUDA 12.9).
-   This tag bundles transformers>=5.5.0; generic `:latest` fails to load the
-   gemma4 architecture. (`:gemma4-cu130` exists but needs a newer driver.)
-3. **External image pull** — confirm the cluster can pull `vllm/vllm-openai`
-   from docker.io (no blocking ImageContentSourcePolicy). RHOAI ships a
-   supported vLLM ServingRuntime we can fall back to if docker.io is blocked.
-   (Only truly verifiable at run time; pre-flight step in the runbook.)
+- Serves `google/gemma-4-31B-it` (30.7B params, BF16, ~62 GB weights) via vLLM,
+  exposing the **OpenAI-compatible API** (`/v1/models`, `/v1/chat/completions`,
+  streaming) on an edge-TLS Route.
+- The model is too tight for a single 80 GB H100 once the KV cache is added, so
+  it runs **tensor-parallel across 2× H100** (`--tensor-parallel-size=2`).
+- Weights live on a **Pure FlashBlade RWX PVC** (`pure-fb-nfsv4`), so they
+  persist across pod restarts and are never re-downloaded on a warm start.
 
-## Runbook
+## How it does it
 
-Manifests are now a kustomize base driven by `scripts/config.conf`. See
-**TEST-PLAN.md** for the full procedure. Quick version:
+Manifests are a **kustomize base + components**, driven entirely by
+`scripts/config.conf`. `up.sh` generates an overlay (`overlays/current`) from that
+config, so you edit one file and never hand-write YAML.
 
-    cd scripts
-    $EDITOR config.conf         # set namespace, TP_SIZE/GPU_COUNT, MODEL_ID, ...
-    ./up.sh                    # apply + wait for Ready + print endpoint
-    ./test.sh                  # smoke test (models, chat, GPU); --stream --gpu
+```
+base/               SHARED by both modes
+  pvc.yaml            Pure RWX PVC `model-cache` — the weight store
+  params.properties   default vLLM knobs (MODEL_ID, TP_SIZE, ...)
+  kustomization.yaml  pvc + configMapGenerator(gemma4-params)
+components/
+  lazy/               SERVE_MODE=lazy  — plain Deployment + Service + Route
+  kserve/             SERVE_MODE=kserve — ServingRuntime + InferenceService + seed Job
+overlays/current/   GENERATED by up.sh from config.conf (do not edit by hand)
+scripts/
+  config.conf         the ONE file you edit
+  up.sh down.sh test.sh lib.sh
+```
 
-Manual equivalent: `oc apply -k base` (defaults) or `oc apply -k overlays/current`.
+### Two serving modes (`SERVE_MODE`)
+
+Both modes serve the same API off the **same Pure PVC**; they differ in how the
+weights get onto it and what fronts vLLM. Keeping both is deliberate — it shows
+the *range* of what the compute center supports, from a quick spike to a governed
+platform deployment.
+
+| | `lazy` (default) | `kserve` |
+|---|---|---|
+| Front-end | plain `Deployment` + `Route` | KServe `InferenceService` (RawDeployment) |
+| Weights onto PVC | vLLM pulls from HuggingFace on first boot | explicit **seed Job** stages them first, then exits |
+| vLLM reads weights from | `HF_HOME=/cache` on the PVC | `pvc://model-cache/<model>` mounted read-only at `/mnt/models` |
+| Cluster requirement | GPUs + RWX storage only | + RHOAI single-model serving (KServe) |
+| Best for | quick iteration, minimal platform deps | governed serving, pre-staged HF-independent weights |
+
+In `kserve` mode `up.sh` handles the sequencing: it creates the PVC, runs the
+seed Job **to completion**, and only then applies the ServingRuntime +
+InferenceService — so vLLM never starts against an empty `/mnt/models`. It also
+publishes an external Service + edge Route (a RawDeployment predictor isn't
+directly routable) and labels the namespace `modelmesh-enabled=false`.
+
+## How to run it
+
+```
+cd scripts
+$EDITOR config.conf          # set NAMESPACE, SERVE_MODE, TP_SIZE/GPU_COUNT, MODEL_ID, ...
+./up.sh                      # generate overlay, apply, wait for Ready, print the endpoint
+```
+
+Any value in `config.conf` can be overridden by an env var of the same name
+(env wins), e.g. try the KServe path without editing the file:
+
+```
+SERVE_MODE=kserve ./up.sh
+```
+
+**Settable values:** `NAMESPACE`, `SERVE_MODE` (`lazy`|`kserve`), `IMAGE`,
+`MODEL_ID`, `SERVED_NAME`, `TP_SIZE`, `MAX_MODEL_LEN`, `GPU_MEM_UTIL`,
+`GPU_COUNT` (must equal `TP_SIZE`), `STORAGE_SIZE`, `HF_TOKEN` (optional — the
+model is public/ungated, so a token only improves download rate limits).
+
+`up.sh` creates the project if needed. First run downloads ~62 GB, so expect
+~15–20 min to Ready; `./up.sh --no-wait` returns immediately without blocking.
+
+## How to run the tests
+
+```
+cd scripts
+./test.sh                    # core checks: pod Ready, /v1/models lists gemma-4, chat completion
+./test.sh --stream --gpu     # also: SSE streaming + nvidia-smi (both H100s resident)
+```
+
+`test.sh` is mode-aware — it resolves the right pod label and route for whichever
+`SERVE_MODE` is set, prints `PASS`/`FAIL` per check, and exits non-zero if any
+fail. Reference runs pass **5/5** in both modes (GPU 0 ≈ 76 GB, GPU 1 ≈ 76 GB in
+use, confirming TP=2). For the manual `curl` equivalents, see **TESTING.md**.
 
 ## Teardown
 
-    cd scripts
-    ./down.sh                  # FULL: release GPUs AND delete weight cache
-    ./down.sh --keep-cache     # release GPUs, keep PVC for a fast re-run
+```
+cd scripts
+./down.sh                    # FULL: releases GPUs AND deletes the weight cache
+./down.sh --keep-cache       # releases GPUs, KEEPS the model-cache PVC for a fast re-run
+```
 
-## Notes / decisions
-- Plain Deployment + Route (not KServe) chosen for a fast dev spike. KServe is
-  available and is the "proper" path if this graduates beyond a smoke test.
-- One model per vLLM server: multi-model later = N of these, or MIG/time-slice
-  to pack several on fewer GPUs.
-- Success criteria: pod Ready, `/v1/models` lists `gemma-4`, chat completion
-  returns coherent text generated on the H100.
+`down.sh` deletes the compute (mode-aware), the hashed params ConfigMap and the
+`hf-token` secret, optionally the PVC, then verifies **0 GPUs held**. GPUs are
+what cost money; `--keep-cache` preserves the ~62 GB weights so the next `up.sh`
+skips the download (warm start, minutes → seconds to Ready).
+
+## Prerequisites (short version — full detail in TEST-PLAN.md)
+
+- `oc` CLI logged in; an account that can `oc new-project` (namespace-level only,
+  no node access needed). `curl` + `python3` for `test.sh`.
+- GPU nodes advertising `nvidia.com/gpu` (validated on 2× H100 80 GB nodes).
+- An RWX storage class — here `pure-fb-nfsv4` (Portworx fronting Pure FlashBlade).
+- Egress to `huggingface.co` and the weight CDN `us.aws.cdn.hf.co`.
+- Ability to pull `docker.io/vllm/vllm-openai:gemma4` (RHOAI ships a supported
+  vLLM ServingRuntime as a fallback if docker.io is blocked).
+- For `kserve` mode: RHOAI single-model serving (KServe) installed.
+
+## Gotchas worth knowing (the non-obvious bits)
+
+- **Image tag matters:** use `docker.io/vllm/vllm-openai:gemma4` — it bundles
+  `transformers ≥ 5.5.0`. Generic `:latest` fails with
+  `model type 'gemma4' not recognized`. Fully-qualify the image (CRI-O
+  short-name-mode rejects the bare name as ambiguous).
+- **Writable `HOME`:** OpenShift's `restricted` SCC runs a random high UID with
+  `HOME=/` (not writable). Both the serving container and the kserve seed Job set
+  `HOME` (and the seed sets `HF_HOME`) to writable paths; without this,
+  flashinfer/torch and the HF **Xet** download backend fail with
+  `PermissionError: [Errno 13] ... Permission denied`.
+- **Repo id is case-sensitive:** capital `B` in `google/gemma-4-31B-it`.
+- **Single-GPU alternative:** the QAT checkpoint
+  `google/gemma-4-31B-it-qat-w4a16-ct` (~1/4 size) if you ever need TP=1.
+
+## Out of scope (would be needed for a real deliverable)
+
+Auth/TLS beyond the default router cert; autoscaling/revisions/model-registry
+(available via KServe/RHOAI but not exercised here); multi-model packing
+(one model per vLLM server today); RDMA/SR-IOV networking. See TEST-PLAN.md §7.

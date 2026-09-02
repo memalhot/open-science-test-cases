@@ -8,8 +8,18 @@ load_config
 KEEP_CACHE=0
 [ "${1:-}" = "--keep-cache" ] && KEEP_CACHE=1
 
-info "Deleting compute (deployment, service, route, pods) in $NAMESPACE"
-oc delete deployment,service,route,pod -l "$APP_LABEL" -n "$NAMESPACE" --ignore-not-found
+if [ "$SERVE_MODE" = "lazy" ]; then
+  info "Deleting compute (deployment, service, route, pods) in $NAMESPACE"
+  oc delete deployment,service,route,pod -l "$APP_LABEL" -n "$NAMESPACE" --ignore-not-found
+else
+  info "Deleting KServe serving (inferenceservice, runtime, seed job, route) in $NAMESPACE"
+  # Deleting the InferenceService cascades to its predictor Deployment/pods.
+  oc delete inferenceservice gemma4 -n "$NAMESPACE" --ignore-not-found
+  oc delete servingruntime gemma4-vllm-runtime -n "$NAMESPACE" --ignore-not-found
+  oc delete job gemma4-seed -n "$NAMESPACE" --ignore-not-found
+  oc delete route "$ROUTE_NAME" -n "$NAMESPACE" --ignore-not-found
+  oc delete service gemma4-external -n "$NAMESPACE" --ignore-not-found
+fi
 
 # ConfigMap from the generator carries a hash suffix; match by name prefix.
 for cm in $(oc get configmap -n "$NAMESPACE" -o name 2>/dev/null | grep 'gemma4-params' || true); do
