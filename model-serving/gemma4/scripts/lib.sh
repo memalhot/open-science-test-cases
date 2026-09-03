@@ -47,9 +47,12 @@ load_config() {
       ;;
     kserve)
       # RawDeployment predictor pods carry this KServe label; the route is the
-      # external edge route up.sh creates for the InferenceService.
+      # external edge route up.sh creates for the InferenceService. The route name
+      # deliberately differs from the isvc name ('gemma4'): a route sharing the
+      # isvc's name gets pruned by KServe while the isvc reconciles (it's a
+      # cluster-local isvc), so we use a distinct name it never touches.
       APP_LABEL="serving.kserve.io/inferenceservice=gemma4"
-      ROUTE_NAME="gemma4"
+      ROUTE_NAME="gemma4-infer"
       ;;
     *)
       die "invalid SERVE_MODE '$SERVE_MODE' (expected 'lazy' or 'kserve')"
@@ -64,6 +67,11 @@ route_url() {
   local host
   host="$(oc get route "$ROUTE_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
   [ -n "$host" ] && printf 'https://%s' "$host"
+  # Always succeed: a missing route yields empty output, not a non-zero exit. The
+  # bare `[ -n "$host" ] && ...` above returns 1 when host is empty, and callers
+  # use `URL="$(route_url)"` under `set -e` — a non-zero return there silently
+  # kills the whole script (no error), which once made test.sh exit blank.
+  return 0
 }
 
 pod_name() {

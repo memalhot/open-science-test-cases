@@ -9,12 +9,12 @@ The server speaks the OpenAI-compatible API. Model is served under the name
 ## 0. Get the endpoint URL
 
 The Route name depends on the serving mode it was deployed with (`lazy` uses
-`gemma4-vllm`; `kserve` uses `gemma4`):
+`gemma4-vllm`; `kserve` uses `gemma4-infer`):
 
     # lazy (default):
     URL="https://$(oc get route gemma4-vllm -n eldritchjs-sandbox -o jsonpath='{.spec.host}')"
     # kserve:
-    URL="https://$(oc get route gemma4 -n eldritchjs-sandbox -o jsonpath='{.spec.host}')"
+    URL="https://$(oc get route gemma4-infer -n eldritchjs-sandbox -o jsonpath='{.spec.host}')"
     echo "$URL"
 
 (The router uses its default cert, so add `-k` to curl to skip cert validation.)
@@ -90,6 +90,36 @@ vLLM logs per-request latency, tokens/s, and KV-cache usage.
 - Step 1 returns the model list (HTTP 200).
 - Step 2 returns a coherent, on-topic completion.
 - Step 5 shows both H100s with memory allocated to the vLLM process.
+
+## 7. Load-test / benchmark it (guidellm, from a separate pod)
+
+To measure throughput and latency under load — not just "does it answer" — run
+`benchmark.sh`. It launches [guidellm](https://github.com/vllm-project/guidellm)
+in its **own** pod and points it at the endpoint's in-cluster ClusterIP Service
+(plain HTTP, no router/TLS in the path), so the numbers reflect real client→server
+behavior over the cluster network rather than localhost.
+
+    cd scripts
+    ./benchmark.sh                        # 'sweep': auto-varies concurrency, 60s, 256-in/128-out
+    BENCH_MAX_SECONDS=120 ./benchmark.sh  # run each rate longer
+    BENCH_RATE_TYPE=throughput ./benchmark.sh   # push max throughput instead of a sweep
+
+The endpoint must already be up (`./up.sh` first) — this benchmarks it, it doesn't
+deploy it. It's mode-aware: `lazy` targets Service `gemma4-vllm:8000`, `kserve`
+targets the external Service `gemma4-external:80`.
+
+**Tunables (env vars):** `BENCH_RATE_TYPE` (`sweep`|`constant`|`throughput`|…),
+`BENCH_MAX_SECONDS`, `BENCH_PROMPT_TOKENS`, `BENCH_OUTPUT_TOKENS`.
+
+guidellm loads the tokenizer from the real HF repo id (`--processor`, since the
+served name `gemma-4` isn't an HF id) to build the synthetic prompts. The script
+streams the run and prints guidellm's summary table at the end — read
+requests/sec, TTFT (time to first token), inter-token latency, and end-to-end
+latency per concurrency level from that table. The full JSON is written to
+`/tmp/guidellm-results.json` inside the pod.
+
+The benchmark Job is left in place so you can re-read its logs
+(`oc logs job/gemma4-benchmark -n eldritchjs-sandbox`); `./down.sh` removes it.
 
 ## When you're done — tear it down (stop GPU charges)
 

@@ -186,15 +186,16 @@ streaming and GPU-residency checks. `test.sh` is **mode-aware** — it resolves 
 right route and pod label from `SERVE_MODE`, so the same command works for both.
 
 The manual commands below use the **`lazy`** route/label. In **`kserve`** mode the
-names differ (test.sh handles this for you): route `gemma4`, pod label
-`serving.kserve.io/inferenceservice=gemma4`, and vLLM listens on `8080` internally
-(fronted by the external Service + edge Route on 443).
+names differ (test.sh handles this for you): route `gemma4-infer` (deliberately
+*not* named `gemma4` — a route sharing the isvc's name gets pruned by KServe while
+it reconciles), pod label `serving.kserve.io/inferenceservice=gemma4`, and vLLM
+listens on `8080` internally (fronted by the external Service + edge Route on 443).
 
 ```
 # lazy:
 URL="https://$(oc get route gemma4-vllm -n eldritchjs-sandbox -o jsonpath='{.spec.host}')"
 # kserve:
-URL="https://$(oc get route gemma4 -n eldritchjs-sandbox -o jsonpath='{.spec.host}')"
+URL="https://$(oc get route gemma4-infer -n eldritchjs-sandbox -o jsonpath='{.spec.host}')"
 ```
 
 | # | Check | Command | Pass condition |
@@ -250,7 +251,7 @@ Use between test cycles when you don't need to preserve anything.
 oc delete deploy,svc,route,pod -l app=gemma4-vllm -n eldritchjs-sandbox --ignore-not-found
 # kserve:
 oc delete inferenceservice gemma4 servingruntime gemma4-vllm-runtime \
-  job/gemma4-seed route/gemma4 svc/gemma4-external -n eldritchjs-sandbox --ignore-not-found
+  job/gemma4-seed route/gemma4-infer svc/gemma4-external -n eldritchjs-sandbox --ignore-not-found
 # both — shared objects:
 oc delete pvc model-cache -n eldritchjs-sandbox --ignore-not-found     # deletes cached weights (reclaim=Delete)
 oc delete secret hf-token  -n eldritchjs-sandbox --ignore-not-found

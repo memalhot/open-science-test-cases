@@ -106,6 +106,23 @@ cd scripts
 fail. Reference runs pass **5/5** in both modes (GPU 0 ≈ 76 GB, GPU 1 ≈ 76 GB in
 use, confirming TP=2). For the manual `curl` equivalents, see **TESTING.md**.
 
+## Benchmarking (optional)
+
+```
+cd scripts
+./benchmark.sh                       # sweep, 60s, 256-in/128-out tokens
+BENCH_MAX_SECONDS=120 ./benchmark.sh # longer run
+```
+
+`benchmark.sh` load-tests the *running* endpoint with
+[guidellm](https://github.com/vllm-project/guidellm) from a **separate in-cluster
+pod**, so the numbers reflect real client→server behavior over the cluster network
+(not localhost). It's mode-aware — it hits the ClusterIP Service directly (plain
+HTTP, no router/TLS) for whichever `SERVE_MODE` is up — and env-tunable via
+`BENCH_RATE_TYPE`, `BENCH_MAX_SECONDS`, `BENCH_PROMPT_TOKENS`, `BENCH_OUTPUT_TOKENS`.
+The endpoint must already be up (`./up.sh` first). See **TESTING.md** for reading
+the results. `down.sh` cleans up any leftover benchmark Job.
+
 ## Teardown
 
 ```

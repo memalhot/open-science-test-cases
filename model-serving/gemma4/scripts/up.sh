@@ -166,18 +166,25 @@ else
     exit 0
   fi
 
-  info "Waiting for seed Job to complete (first run downloads weights — ~15-20 min)..."
+  # Seed time depends on HF-CDN egress; on a fast link the ~62GB pull is only a
+  # few minutes, but budget generously for a cold/slow link.
+  info "Waiting for seed Job to complete (downloads ~62GB — a few min to ~20 min)..."
   oc wait --for=condition=complete job/gemma4-seed -n "$NAMESPACE" --timeout=1800s
 
   info "Applying serving manifests (oc apply -k)"
   oc apply -k "$OVERLAY_DIR"
 
+  info "Waiting for the InferenceService to become Ready..."
+  oc wait --for=condition=Ready inferenceservice/gemma4 -n "$NAMESPACE" --timeout=1800s
+
   # KServe RawDeployment's predictor service isn't directly routable; publish an
   # explicit external service + edge route (same approach as the granite path).
-  # Idempotent, but do NOT swallow genuine errors: `2>/dev/null || true` once hid
-  # a failed route creation, leaving a "Ready" InferenceService with no reachable
-  # endpoint (test.sh then died with no route). Create only what's missing and let
-  # a real failure propagate via set -e.
+  # IMPORTANT: create the route only AFTER the InferenceService is Ready. While the
+  # isvc is still progressing, KServe actively reconciles it and prunes an
+  # externally-facing route sharing the isvc's name (this isvc is cluster-local),
+  # so a route created earlier gets deleted out from under us. Once Ready (steady
+  # state) KServe leaves it alone. Idempotent, and errors are NOT swallowed
+  # (a hidden failure once left a Ready isvc with no reachable endpoint).
   info "Creating external service and route"
   if ! oc get service gemma4-external -n "$NAMESPACE" >/dev/null 2>&1; then
     oc create service clusterip gemma4-external --tcp=80:8080 -n "$NAMESPACE"
@@ -187,9 +194,6 @@ else
     oc create route edge "$ROUTE_NAME" --service=gemma4-external --port=80-8080 \
       -n "$NAMESPACE"
   fi
-
-  info "Waiting for the InferenceService to become Ready..."
-  oc wait --for=condition=Ready inferenceservice/gemma4 -n "$NAMESPACE" --timeout=1800s
 fi
 
 url="$(route_url)"

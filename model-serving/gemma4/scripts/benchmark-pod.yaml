@@ -1,0 +1,56 @@
+# In-cluster load test of the running Gemma 4 endpoint using guidellm
+# (https://github.com/vllm-project/guidellm). Runs in a SEPARATE pod from the
+# serving pod, so the numbers reflect real client -> server behavior over the
+# cluster network (not localhost).
+#
+# NOTE: this is a template. scripts/benchmark.sh substitutes the __PLACEHOLDERS__
+# (from config.conf + the resolved in-cluster service URL) and applies it with
+# `oc apply -f -`. It targets the ClusterIP Service directly (plain HTTP, no
+# router/TLS), so it works for both serving modes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gemma4-benchmark
+  labels: { app: gemma4-benchmark }
+spec:
+  backoffLimit: 0            # a benchmark either runs or it doesn't; don't retry
+  template:
+    metadata:
+      labels: { app: gemma4-benchmark }
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: guidellm
+          image: ghcr.io/vllm-project/guidellm:latest
+          command: ["guidellm", "benchmark"]
+          args:
+            # Base URL of the OpenAI-compatible server (guidellm appends /v1/...).
+            - "--target=__TARGET__"
+            # Name the server serves under (--served-model-name), sent in requests.
+            - "--model=__SERVED_NAME__"
+            # Real HF repo id — guidellm loads its tokenizer to build/measure
+            # prompts (the served name 'gemma-4' is not an HF id, so this is
+            # required; the model is public/ungated).
+            - "--processor=__MODEL_ID__"
+            # 'sweep' auto-varies concurrency to map the throughput/latency curve.
+            - "--rate-type=__RATE_TYPE__"
+            - "--max-seconds=__MAX_SECONDS__"
+            # Synthetic workload shape.
+            - "--data=prompt_tokens=__PROMPT_TOKENS__,output_tokens=__OUTPUT_TOKENS__"
+            # Results file must go somewhere writable (random UID, HOME=/).
+            - "--output-path=/tmp/guidellm-results.json"
+          env:
+            # OpenShift random UID with HOME=/ (not writable) — give the tokenizer
+            # download + HF caches a writable home (same reason as the serving pod).
+            - name: HOME
+              value: "/tmp"
+            - name: HF_HOME
+              value: "/tmp/hf"
+            - name: HF_HUB_ENABLE_HF_TRANSFER
+              value: "0"
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef: { name: hf-token, key: token, optional: true }
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits:   { cpu: "4", memory: 8Gi }

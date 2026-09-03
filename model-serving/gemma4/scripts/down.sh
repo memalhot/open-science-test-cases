@@ -21,6 +21,9 @@ else
   oc delete service gemma4-external -n "$NAMESPACE" --ignore-not-found
 fi
 
+# Remove any leftover benchmark Job (from benchmark.sh) regardless of mode.
+oc delete job gemma4-benchmark -n "$NAMESPACE" --ignore-not-found
+
 # ConfigMap from the generator carries a hash suffix; match by name prefix.
 for cm in $(oc get configmap -n "$NAMESPACE" -o name 2>/dev/null | grep 'gemma4-params' || true); do
   oc delete "$cm" -n "$NAMESPACE" --ignore-not-found
