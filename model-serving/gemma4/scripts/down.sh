@@ -2,11 +2,18 @@
 # Tear down the Gemma 4 vLLM serving to stop GPU (and optionally storage) charges.
 #   ./down.sh              # FULL teardown: releases GPUs AND deletes the weight cache
 #   ./down.sh --keep-cache # release GPUs but KEEP the model-cache PVC (fast re-run)
+# Teardown covers BOTH serving modes, so --mode is unnecessary (accepted, ignored).
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+parse_mode_flag "$@"; set -- ${REST_ARGS[@]+"${REST_ARGS[@]}"}
 load_config
 
 KEEP_CACHE=0
-[ "${1:-}" = "--keep-cache" ] && KEEP_CACHE=1
+for a in "$@"; do
+  case "$a" in
+    --keep-cache) KEEP_CACHE=1 ;;
+    *) die "unknown flag: $a" ;;
+  esac
+done
 
 # Delete BOTH modes' compute unconditionally, regardless of the SERVE_MODE in the
 # environment. Teardown's whole job is to stop GPU charges, so it must never leave

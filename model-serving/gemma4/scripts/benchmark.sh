@@ -3,12 +3,13 @@
 # guidellm (https://github.com/vllm-project/guidellm).
 #   ./benchmark.sh                       # sweep, 60s, 256-in/128-out tokens
 #   BENCH_MAX_SECONDS=120 ./benchmark.sh # longer run
-#   SERVE_MODE=kserve ./benchmark.sh     # target the kserve endpoint
+#   ./benchmark.sh --mode kserve         # override SERVE_MODE (else config.conf/env)
 #
 # Runs guidellm in its own pod and points it at the ClusterIP Service directly
 # (plain HTTP — no router/TLS in the path), so the numbers reflect real
 # client->server behavior. Mode-aware: resolves the right Service per SERVE_MODE.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+parse_mode_flag "$@"; set -- ${REST_ARGS[@]+"${REST_ARGS[@]}"}
 load_config
 
 # --- tunable workload (env-overridable) ---

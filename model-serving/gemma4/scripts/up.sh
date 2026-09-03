@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Stand up the Gemma 4 vLLM serving from scripts/config.conf.
-#   ./up.sh            # generate overlay, apply, wait for Ready, print endpoint
-#   ./up.sh --no-wait  # apply and return immediately (don't block on rollout)
+#   ./up.sh                    # generate overlay, apply, wait for Ready, print endpoint
+#   ./up.sh --no-wait          # apply and return immediately (don't block on rollout)
+#   ./up.sh --mode kserve      # override SERVE_MODE for this run (else config.conf/env)
 #
-# SERVE_MODE (config.conf) selects the mechanism:
+# SERVE_MODE selects the mechanism (set in config.conf, or per-run via --mode / env):
 #   lazy   = plain Deployment; vLLM pulls weights from HF into the Pure PVC.
 #   kserve = seed Job stages weights onto the PVC, then a KServe InferenceService
 #            serves them from pvc://model-cache.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+parse_mode_flag "$@"; set -- ${REST_ARGS[@]+"${REST_ARGS[@]}"}
 load_config
 
 WAIT=1

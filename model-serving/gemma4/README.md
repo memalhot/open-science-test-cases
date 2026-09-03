@@ -85,6 +85,16 @@ Any value in `config.conf` can be overridden by an env var of the same name
 SERVE_MODE=kserve ./up.sh
 ```
 
+For the serving mode specifically there's also a `--mode lazy|kserve` flag on
+`up.sh`, `test.sh`, and `benchmark.sh` — handy when you flip modes often:
+
+```
+./up.sh --mode kserve && ./test.sh --mode kserve --stream --gpu
+```
+
+`--mode` overrides both `config.conf` and the env var; with no flag the
+config/env value is used. `down.sh` needs no mode (it tears down both).
+
 **Settable values:** `NAMESPACE`, `SERVE_MODE` (`lazy`|`kserve`), `IMAGE`,
 `MODEL_ID`, `SERVED_NAME`, `TP_SIZE`, `MAX_MODEL_LEN`, `GPU_MEM_UTIL`,
 `GPU_COUNT` (must equal `TP_SIZE`), `STORAGE_SIZE`, `HF_TOKEN` (optional — the

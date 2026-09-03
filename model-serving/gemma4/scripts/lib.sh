@@ -16,6 +16,26 @@ die()  { printf '%sxx%s  %s\n' "$c_red" "$c_rst" "$*" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
 
+# Extract an optional `--mode lazy|kserve` (or `--mode=lazy`) from a script's
+# arguments and set SERVE_MODE from it. Call this BEFORE load_config: SERVE_MODE
+# set here is snapshotted by load_config and so overrides config.conf, exactly
+# like an env var would (env/config remain the default when no flag is passed).
+# The remaining, non-mode arguments are returned in the global array REST_ARGS so
+# the caller can restore them with:  set -- ${REST_ARGS[@]+"${REST_ARGS[@]}"}
+# (that expansion is empty-array-safe under `set -u` on bash 3.2 / macOS).
+parse_mode_flag() {
+  REST_ARGS=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --mode)   shift; [ "$#" -gt 0 ] || die "--mode needs a value (lazy|kserve)"
+                SERVE_MODE="$1" ;;
+      --mode=*) SERVE_MODE="${1#--mode=}" ;;
+      *)        REST_ARGS+=("$1") ;;
+    esac
+    shift
+  done
+}
+
 # Load config.conf, then let any pre-set environment variables win.
 load_config() {
   need oc
