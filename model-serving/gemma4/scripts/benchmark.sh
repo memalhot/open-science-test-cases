@@ -12,7 +12,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 load_config
 
 # --- tunable workload (env-overridable) ---
-RATE_TYPE="${BENCH_RATE_TYPE:-sweep}"       # sweep | constant | throughput | ...
+# RATE_TYPE feeds guidellm's `--profile kind=...`: sweep | throughput |
+# synchronous | concurrent | constant | poisson. 'sweep' (the default) needs no
+# extra params and maps the whole latency/throughput curve; 'constant'/'poisson'
+# also need a rate and aren't wired up here — stick to sweep/throughput/synchronous.
+RATE_TYPE="${BENCH_RATE_TYPE:-sweep}"
 MAX_SECONDS="${BENCH_MAX_SECONDS:-60}"
 PROMPT_TOKENS="${BENCH_PROMPT_TOKENS:-256}"
 OUTPUT_TOKENS="${BENCH_OUTPUT_TOKENS:-128}"
@@ -47,14 +51,34 @@ info "Waiting for the benchmark pod to start (pulls the guidellm image + tokeniz
 oc wait --for=condition=ready pod -l app=gemma4-benchmark -n "$NAMESPACE" --timeout=180s \
   || warn "pod not Ready yet — streaming logs anyway"
 
-info "Streaming guidellm output (the summary table prints at the end)..."
-oc logs -f job/gemma4-benchmark -n "$NAMESPACE" || true
+info "Streaming guidellm output (a sweep runs ~10 sub-benchmarks; the summary tables print at the end)..."
+# `oc logs -f` frequently drops ("unexpected EOF") before a multi-minute sweep
+# finishes — that is NOT a job failure, so don't treat the stream ending as done.
+oc logs -f job/gemma4-benchmark -n "$NAMESPACE" 2>/dev/null || true
+
+# The stream may have ended early; poll the Job's own conditions for the real
+# outcome (fast when already done, waits when the stream just dropped mid-run).
+info "Waiting for the benchmark Job to finish..."
+final=""; deadline=$(( $(date +%s) + 1800 ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  final="$(oc get job gemma4-benchmark -n "$NAMESPACE" \
+    -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type}{"\n"}{end}' \
+    2>/dev/null | grep -E 'Complete|Failed' | head -1 || true)"
+  [ -n "$final" ] && break
+  sleep 5
+done
 
 echo
-if oc wait --for=condition=complete job/gemma4-benchmark -n "$NAMESPACE" --timeout=10s >/dev/null 2>&1; then
-  info "Benchmark complete. (Clean up with: oc delete job gemma4-benchmark -n $NAMESPACE)"
+if [ "$final" = "Complete" ]; then
+  info "===== final results (re-printed in case the stream dropped) ====="
+  oc logs job/gemma4-benchmark -n "$NAMESPACE" 2>/dev/null | tail -45
+  echo
+  bpod="$(oc get pod -l app=gemma4-benchmark -n "$NAMESPACE" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  info "Benchmark complete. Full JSON/CSV live in the pod at /tmp/benchmarks.{json,csv}:"
+  [ -n "$bpod" ] && info "  oc cp $NAMESPACE/$bpod:/tmp/benchmarks.json ./benchmarks.json"
+  info "  Clean up: oc delete job gemma4-benchmark -n $NAMESPACE   (or ./down.sh)"
 else
-  warn "Benchmark job did not report 'complete'. Inspect:"
+  warn "Benchmark Job did not complete (${final:-still running/timed out}). Inspect:"
   warn "  oc logs job/gemma4-benchmark -n $NAMESPACE"
   warn "  oc describe job gemma4-benchmark -n $NAMESPACE"
 fi

@@ -22,23 +22,31 @@ spec:
       containers:
         - name: guidellm
           image: ghcr.io/vllm-project/guidellm:latest
-          command: ["guidellm", "benchmark"]
+          # Current guidellm uses `run` with kind=key,val sub-configs (the older
+          # `benchmark --target/--processor/--rate-type/--data prompt_tokens=...`
+          # CLI no longer exists). This arg set is validated live against the
+          # endpoint — see TEST-PLAN.md.
+          command: ["guidellm", "run"]
           args:
-            # Base URL of the OpenAI-compatible server (guidellm appends /v1/...).
-            - "--target=__TARGET__"
-            # Name the server serves under (--served-model-name), sent in requests.
-            - "--model=__SERVED_NAME__"
-            # Real HF repo id — guidellm loads its tokenizer to build/measure
+            # OpenAI-compatible backend: base URL + the served model name (the
+            # server's --served-model-name), sent in each request.
+            - "--backend"
+            - "kind=openai_http,target=__TARGET__,model=__SERVED_NAME__"
+            # Load pattern. 'sweep' auto-varies concurrency (synchronous ->
+            # throughput -> a spread of constant rates) to map the latency curve.
+            - "--profile"
+            - "kind=__RATE_TYPE__"
+            # Cap each sub-benchmark by wall-clock instead of request count.
+            - "--constraint"
+            - "kind=max_duration,seconds=__MAX_SECONDS__"
+            # Synthetic workload shape.
+            - "--data"
+            - "kind=synthetic_text,prompt_tokens=__PROMPT_TOKENS__,output_tokens=__OUTPUT_TOKENS__"
+            # Real HF repo id — guidellm loads this tokenizer to build/measure
             # prompts (the served name 'gemma-4' is not an HF id, so this is
             # required; the model is public/ungated).
-            - "--processor=__MODEL_ID__"
-            # 'sweep' auto-varies concurrency to map the throughput/latency curve.
-            - "--rate-type=__RATE_TYPE__"
-            - "--max-seconds=__MAX_SECONDS__"
-            # Synthetic workload shape.
-            - "--data=prompt_tokens=__PROMPT_TOKENS__,output_tokens=__OUTPUT_TOKENS__"
-            # Results file must go somewhere writable (random UID, HOME=/).
-            - "--output-path=/tmp/guidellm-results.json"
+            - "--tokenizer"
+            - "kind=huggingface_auto,model=__MODEL_ID__"
           env:
             # OpenShift random UID with HOME=/ (not writable) — give the tokenizer
             # download + HF caches a writable home (same reason as the serving pod).
@@ -48,6 +56,10 @@ spec:
               value: "/tmp/hf"
             - name: HF_HUB_ENABLE_HF_TRANSFER
               value: "0"
+            # guidellm writes benchmarks.{json,csv,html} here; default /results may
+            # not be writable under a random UID, so point it at /tmp.
+            - name: GUIDELLM__DEFAULT_RESULTS_DIR
+              value: "/tmp"
             - name: HUGGING_FACE_HUB_TOKEN
               valueFrom:
                 secretKeyRef: { name: hf-token, key: token, optional: true }
