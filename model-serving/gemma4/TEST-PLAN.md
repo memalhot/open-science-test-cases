@@ -225,6 +225,8 @@ GPU 1 = 75897 MiB in use. (See `TESTING.md` for the self-serve/colleague copy.)
 | **kserve** predictor CrashLoop, `PermissionError ... '/.cache'` | same random-UID/unwritable-`HOME` issue, now in the ServingRuntime | set `HOME=/home/vllm` on a writable emptyDir in the ServingRuntime |
 | **kserve** InferenceService "Ready" but endpoint unreachable / `test.sh` dies with no route | up.sh created the Route under `2>/dev/null \|\| true`, hiding a failure | guard the create (check-then-create) so a real error surfaces via `set -e` |
 | `huggingface-cli download` fails under `set -eu` in the image | `huggingface-cli` is deprecated and non-functional in the vLLM image | use `hf download` (huggingface_hub) instead |
+| guidellm (`:latest`/`:stable`) `Error: No such command 'benchmark'` | current guidellm replaced the `benchmark --target/--processor/--rate-type/--data prompt_tokens=...` CLI with `run --backend kind=... --profile kind=... --data kind=synthetic_text,... --tokenizer kind=huggingface_auto,...` | rewrote `benchmark-pod.yaml` to the `run` CLI; validated live (10-benchmark sweep, exit 0) |
+| guidellm writes `benchmarks.{json,csv}` but the run errors on the output dir | default results dir `/results` isn't writable under the random UID | set `GUIDELLM__DEFAULT_RESULTS_DIR=/tmp` |
 
 ---
 
