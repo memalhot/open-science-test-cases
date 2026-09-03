@@ -33,8 +33,9 @@ oc delete service gemma4-external -n "$NAMESPACE" --ignore-not-found
 # Routes by name — lazy: gemma4-vllm; kserve: gemma4-infer; legacy colliding: gemma4.
 oc delete route gemma4-vllm gemma4-infer gemma4 -n "$NAMESPACE" --ignore-not-found
 
-# Remove any leftover benchmark Job (from benchmark.sh) regardless of mode.
+# Remove any leftover benchmark Job + its inference-perf ConfigMap (benchmark.sh).
 oc delete job gemma4-benchmark -n "$NAMESPACE" --ignore-not-found
+oc delete configmap gemma4-benchmark-config -n "$NAMESPACE" --ignore-not-found
 
 # ConfigMap from the generator carries a hash suffix; match by name prefix.
 for cm in $(oc get configmap -n "$NAMESPACE" -o name 2>/dev/null | grep 'gemma4-params' || true); do

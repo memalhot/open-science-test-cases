@@ -120,18 +120,27 @@ use, confirming TP=2). For the manual `curl` equivalents, see **TESTING.md**.
 
 ```
 cd scripts
-./benchmark.sh                       # sweep, 60s, 256-in/128-out tokens
-BENCH_MAX_SECONDS=120 ./benchmark.sh # longer run
+./benchmark.sh                            # guidellm sweep, 60s, 256-in/128-out tokens
+./benchmark.sh --tool inference-perf      # inference-perf, constant BENCH_RATE q/s
+BENCH_MAX_SECONDS=120 ./benchmark.sh      # longer run
 ```
 
-`benchmark.sh` load-tests the *running* endpoint with
-[guidellm](https://github.com/vllm-project/guidellm) from a **separate in-cluster
+`benchmark.sh` load-tests the *running* endpoint from a **separate in-cluster
 pod**, so the numbers reflect real client→server behavior over the cluster network
 (not localhost). It's mode-aware — it hits the ClusterIP Service directly (plain
-HTTP, no router/TLS) for whichever `SERVE_MODE` is up — and env-tunable via
-`BENCH_RATE_TYPE`, `BENCH_MAX_SECONDS`, `BENCH_PROMPT_TOKENS`, `BENCH_OUTPUT_TOKENS`.
-The endpoint must already be up (`./up.sh` first). See **TESTING.md** for reading
-the results. `down.sh` cleans up any leftover benchmark Job.
+HTTP, no router/TLS) for whichever `SERVE_MODE` is up. The endpoint must already be
+up (`./up.sh` first). Two load-test tools are selectable with `--tool` (or
+`BENCH_TOOL`):
+
+| tool | default? | load shape | notes |
+|---|---|---|---|
+| [guidellm](https://github.com/vllm-project/guidellm) | yes | **sweep** (~10 sub-benchmarks ramping concurrency to find peak throughput) | tune with `BENCH_RATE_TYPE` (`sweep`\|`throughput`\|`synchronous`) |
+| [inference-perf](https://github.com/kubernetes-sigs/inference-perf) | `--tool inference-perf` | single **constant rate** of `BENCH_RATE` req/s | uses the `random` datagen over `/v1/completions` (its synthetic generator supports completion, not chat) |
+
+Both are further env-tunable via `BENCH_MAX_SECONDS`, `BENCH_PROMPT_TOKENS`,
+`BENCH_OUTPUT_TOKENS` (guidellm sweeps concurrency; `BENCH_RATE` applies to
+inference-perf only). See **TESTING.md** for reading the results. `down.sh` cleans
+up any leftover benchmark Job and its ConfigMap.
 
 ## Teardown
 

@@ -91,35 +91,53 @@ vLLM logs per-request latency, tokens/s, and KV-cache usage.
 - Step 2 returns a coherent, on-topic completion.
 - Step 5 shows both H100s with memory allocated to the vLLM process.
 
-## 7. Load-test / benchmark it (guidellm, from a separate pod)
+## 7. Load-test / benchmark it (from a separate pod)
 
 To measure throughput and latency under load — not just "does it answer" — run
-`benchmark.sh`. It launches [guidellm](https://github.com/vllm-project/guidellm)
-in its **own** pod and points it at the endpoint's in-cluster ClusterIP Service
-(plain HTTP, no router/TLS in the path), so the numbers reflect real client→server
-behavior over the cluster network rather than localhost.
+`benchmark.sh`. It launches a load-test tool in its **own** pod and points it at
+the endpoint's in-cluster ClusterIP Service (plain HTTP, no router/TLS in the
+path), so the numbers reflect real client→server behavior over the cluster network
+rather than localhost.
 
     cd scripts
-    ./benchmark.sh                        # 'sweep': auto-varies concurrency, 60s, 256-in/128-out
-    BENCH_MAX_SECONDS=120 ./benchmark.sh  # run each rate longer
-    BENCH_RATE_TYPE=throughput ./benchmark.sh   # push max throughput instead of a sweep
+    ./benchmark.sh                          # guidellm 'sweep': auto-varies concurrency, 60s, 256-in/128-out
+    ./benchmark.sh --tool inference-perf    # inference-perf: constant BENCH_RATE q/s
+    BENCH_MAX_SECONDS=120 ./benchmark.sh    # run longer
+    BENCH_RATE_TYPE=throughput ./benchmark.sh   # guidellm: push max throughput instead of a sweep
 
 The endpoint must already be up (`./up.sh` first) — this benchmarks it, it doesn't
 deploy it. It's mode-aware: `lazy` targets Service `gemma4-vllm:8000`, `kserve`
 targets the external Service `gemma4-external:80`.
 
-**Tunables (env vars):** `BENCH_RATE_TYPE` (`sweep`|`constant`|`throughput`|…),
-`BENCH_MAX_SECONDS`, `BENCH_PROMPT_TOKENS`, `BENCH_OUTPUT_TOKENS`.
+**Two tools, pick with `--tool` (or `BENCH_TOOL`):**
 
-guidellm loads the tokenizer from the real HF repo id (`--processor`, since the
-served name `gemma-4` isn't an HF id) to build the synthetic prompts. The script
-streams the run and prints guidellm's summary table at the end — read
-requests/sec, TTFT (time to first token), inter-token latency, and end-to-end
-latency per concurrency level from that table. The full JSON is written to
-`/tmp/guidellm-results.json` inside the pod.
+- **[guidellm](https://github.com/vllm-project/guidellm)** (default) — runs a
+  *sweep* of ~10 sub-benchmarks that ramp concurrency to find peak throughput.
+  Invoked as `guidellm run --backend kind=openai_http,... --profile kind=sweep
+  --data kind=synthetic_text,... --tokenizer kind=huggingface_auto,model=<HF id>`.
+  Results write to `/tmp/benchmarks.{json,csv}` in the pod
+  (`GUIDELLM__DEFAULT_RESULTS_DIR=/tmp`, since the default `/results` isn't
+  writable under the random UID).
+- **[inference-perf](https://github.com/kubernetes-sigs/inference-perf)**
+  (`--tool inference-perf`) — config-file driven (a mounted ConfigMap); runs one
+  *constant rate* stage of `BENCH_RATE` req/s. Uses its `random` synthetic datagen
+  over `/v1/completions` (that generator supports the completion API, not chat).
+  Reports write to `/tmp/reports-*/` in the pod.
 
-The benchmark Job is left in place so you can re-read its logs
-(`oc logs job/gemma4-benchmark -n eldritchjs-sandbox`); `./down.sh` removes it.
+Both load the tokenizer from the real HF repo id (the served name `gemma-4` isn't
+an HF id) to build synthetic prompts of the target length. The script streams the
+run and prints the tool's summary table(s) at the end — read requests/sec, TTFT
+(time to first token), inter-token latency (ITL/TPOT), and end-to-end latency from
+that table.
+
+**Tunables (env vars):** `BENCH_MAX_SECONDS`, `BENCH_PROMPT_TOKENS`,
+`BENCH_OUTPUT_TOKENS` (both tools); `BENCH_RATE_TYPE`
+(`sweep`|`throughput`|`synchronous`, guidellm only); `BENCH_RATE` (req/s,
+inference-perf only).
+
+The benchmark Job (and, for inference-perf, its ConfigMap) is left in place so you
+can re-read its logs (`oc logs job/gemma4-benchmark -n eldritchjs-sandbox`);
+`./down.sh` removes both.
 
 ## When you're done — tear it down (stop GPU charges)
 
