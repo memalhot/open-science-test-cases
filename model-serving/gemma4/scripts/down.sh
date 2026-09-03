@@ -8,18 +8,23 @@ load_config
 KEEP_CACHE=0
 [ "${1:-}" = "--keep-cache" ] && KEEP_CACHE=1
 
-if [ "$SERVE_MODE" = "lazy" ]; then
-  info "Deleting compute (deployment, service, route, pods) in $NAMESPACE"
-  oc delete deployment,service,route,pod -l "$APP_LABEL" -n "$NAMESPACE" --ignore-not-found
-else
-  info "Deleting KServe serving (inferenceservice, runtime, seed job, route) in $NAMESPACE"
-  # Deleting the InferenceService cascades to its predictor Deployment/pods.
-  oc delete inferenceservice gemma4 -n "$NAMESPACE" --ignore-not-found
-  oc delete servingruntime gemma4-vllm-runtime -n "$NAMESPACE" --ignore-not-found
-  oc delete job gemma4-seed -n "$NAMESPACE" --ignore-not-found
-  oc delete route "$ROUTE_NAME" -n "$NAMESPACE" --ignore-not-found
-  oc delete service gemma4-external -n "$NAMESPACE" --ignore-not-found
-fi
+# Delete BOTH modes' compute unconditionally, regardless of the SERVE_MODE in the
+# environment. Teardown's whole job is to stop GPU charges, so it must never leave
+# a predictor running just because it was invoked with the "wrong" mode: running
+# `./down.sh` (defaulting to lazy) against a kserve deploy would otherwise skip the
+# predictor — leaving 2 GPUs held — while still deleting the shared PVC out from
+# under it. Every delete is --ignore-not-found, so removing what isn't there is a
+# harmless no-op.
+info "Deleting compute for BOTH serving modes in $NAMESPACE (releases GPUs)"
+# lazy: Deployment/Service/pods carry app=gemma4-vllm.
+oc delete deployment,service,pod -l app=gemma4-vllm -n "$NAMESPACE" --ignore-not-found
+# kserve: deleting the InferenceService cascades to its predictor Deployment/pods.
+oc delete inferenceservice gemma4 -n "$NAMESPACE" --ignore-not-found
+oc delete servingruntime gemma4-vllm-runtime -n "$NAMESPACE" --ignore-not-found
+oc delete job gemma4-seed -n "$NAMESPACE" --ignore-not-found
+oc delete service gemma4-external -n "$NAMESPACE" --ignore-not-found
+# Routes by name — lazy: gemma4-vllm; kserve: gemma4-infer; legacy colliding: gemma4.
+oc delete route gemma4-vllm gemma4-infer gemma4 -n "$NAMESPACE" --ignore-not-found
 
 # Remove any leftover benchmark Job (from benchmark.sh) regardless of mode.
 oc delete job gemma4-benchmark -n "$NAMESPACE" --ignore-not-found
@@ -48,4 +53,4 @@ else
   warn "$held pod(s) still request a GPU — check: oc get pods -n $NAMESPACE"
 fi
 
-oc get deployment,pod,service,route,pvc -n "$NAMESPACE" -l "$APP_LABEL" 2>/dev/null || true
+oc get inferenceservice,deployment,pod,service,route,pvc -n "$NAMESPACE" 2>/dev/null || true

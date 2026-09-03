@@ -240,11 +240,14 @@ cd scripts
 ./down.sh                # FULL: releases GPUs AND deletes the weight cache
 ./down.sh --keep-cache   # releases GPUs, KEEPS model-cache PVC (fast re-run)
 ```
-`down.sh` deletes the compute (mode-aware — Deployment/Service/Route for `lazy`;
-InferenceService/ServingRuntime/seed Job/external Service/Route for `kserve`),
-removes the hashed params ConfigMap and the `hf-token` secret, optionally the PVC,
-then verifies **0 GPUs held**. Pass the same `SERVE_MODE` you deployed with. The
-manual equivalents follow.
+`down.sh` deletes the compute for **both** modes unconditionally
+(Deployment/Service/Route for `lazy` *and* InferenceService/ServingRuntime/seed
+Job/external Service/Route for `kserve`), removes the hashed params ConfigMap, the
+`hf-token` secret, and any leftover benchmark Job, optionally the PVC, then
+verifies **0 GPUs held**. It is mode-agnostic on purpose — you do **not** need to
+pass the `SERVE_MODE` you deployed with, and running it with the wrong mode can no
+longer leave a predictor holding GPUs while deleting the shared PVC. The manual
+equivalents follow.
 
 ### 6a. Full teardown (default — releases GPUs *and* storage)
 Use between test cycles when you don't need to preserve anything.

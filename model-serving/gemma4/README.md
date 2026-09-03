@@ -131,10 +131,12 @@ cd scripts
 ./down.sh --keep-cache       # releases GPUs, KEEPS the model-cache PVC for a fast re-run
 ```
 
-`down.sh` deletes the compute (mode-aware), the hashed params ConfigMap and the
-`hf-token` secret, optionally the PVC, then verifies **0 GPUs held**. GPUs are
-what cost money; `--keep-cache` preserves the ~62 GB weights so the next `up.sh`
-skips the download (warm start, minutes → seconds to Ready).
+`down.sh` deletes the compute for **both** serving modes (so it always releases
+the GPUs no matter which mode — or none — is set; no need to pass `SERVE_MODE`),
+plus the hashed params ConfigMap, the `hf-token` secret, any leftover benchmark
+Job, and optionally the PVC, then verifies **0 GPUs held**. GPUs are what cost
+money; `--keep-cache` preserves the ~62 GB weights so the next `up.sh` skips the
+download (warm start, minutes → seconds to Ready).
 
 ## Prerequisites (short version — full detail in TEST-PLAN.md)
 
