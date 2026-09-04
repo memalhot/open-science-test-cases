@@ -1,0 +1,60 @@
+# Explicit model-storage step for SERVE_MODE=kserve.
+# One-shot Job that downloads the weights from HuggingFace ONCE into the Pure PVC
+# at /models/<subpath>, then exits. up.sh runs this to completion BEFORE creating
+# the InferenceService, so KServe never starts vLLM against an empty /mnt/models.
+#
+# NOTE: this file is a template. up.sh substitutes the __PLACEHOLDERS__ (from
+# scripts/config.conf) and applies it directly with `oc apply -f -` — it is NOT
+# part of the kustomize build (it must run and finish before the serving overlay
+# is applied). Re-running is safe: huggingface-cli skips already-present files.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gemma4-seed
+  labels: { app: gemma4-kserve }
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels: { app: gemma4-kserve }
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          # Reuse the vLLM image — it already ships the `hf` CLI (huggingface_hub).
+          # NB: the legacy `huggingface-cli` is deprecated and NO LONGER WORKS in
+          # this image (it just prints a warning), so we must use `hf download`.
+          image: __IMAGE__
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              echo "Downloading __MODEL_ID__ -> /models/__MODEL_SUBPATH__"
+              hf download "__MODEL_ID__" \
+                --local-dir "/models/__MODEL_SUBPATH__"
+              echo "Seed complete."
+          env:
+            # OpenShift runs the pod as a random UID with HOME=/ (not writable).
+            # The large shards download via HuggingFace's Xet backend, whose chunk
+            # cache lives under $HF_HOME (default ~/.cache/huggingface). With an
+            # unwritable HOME that cache write fails mid-download with
+            #   RuntimeError: Data processing error: I/O error: Permission denied
+            # (small files like config.json don't use Xet, so they'd deceptively
+            # succeed). Point both at writable paths: HF_HOME onto the PVC (roomy,
+            # world-writable) and HOME at /tmp for anything else.
+            - name: HF_HOME
+              value: "/models/.hf-home"
+            - name: HOME
+              value: "/tmp"
+            # Optional: improves HF rate limits. Job runs fine without it
+            # (target model is public/ungated).
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef: { name: hf-token, key: token, optional: true }
+            - name: HF_HUB_ENABLE_HF_TRANSFER
+              value: "0"
+          volumeMounts:
+            - { name: model-cache, mountPath: /models }
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim: { claimName: model-cache }

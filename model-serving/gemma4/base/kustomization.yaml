@@ -5,11 +5,12 @@ kind: Kustomization
 # from scripts/config.conf.
 namespace: eldritchjs-sandbox
 
+# Shared across serving modes: the Pure RWX weight store plus the tunable vLLM
+# knobs. The serving mechanism itself (plain Deployment vs. KServe) is layered on
+# by a kustomize component — components/lazy or components/kserve — which the
+# generated overlay selects from SERVE_MODE in scripts/config.conf.
 resources:
   - pvc.yaml
-  - deployment.yaml
-  - service.yaml
-  - route.yaml
 
 # Tunable vLLM args. The name-suffix hash means any value change rolls the pod.
 configMapGenerator:

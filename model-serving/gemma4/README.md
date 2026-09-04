@@ -1,64 +1,268 @@
-# Gemma 4 vLLM serving — cluster validation
+# Gemma 4 vLLM serving on OpenShift
 
-Goal: prove this cluster can stand up a Gemma 4 model for inference serving.
-Scope: internal smoke test, **not** the customer deliverable. Single model,
-2×H100 (tensor-parallel), no encryption/auth.
+Stand up **Google Gemma 4 (`gemma-4-31B-it`)** for OpenAI-compatible inference on
+an OpenShift/RHOAI cluster with GPUs, serving with **vLLM** across 2× H100
+(tensor-parallel). One config file, three scripts (`up` / `test` / `down`), and a
+kustomize base that supports **two serving modes** off the same Pure storage.
 
-> Status: validated on `api-oac-prod` 2026-08-24 (PASS), then torn down.
-> Repeatable via `scripts/` (kustomize base + up/down/test). Full procedure and
-> success criteria: **TEST-PLAN.md**. Manual curl reference: **TESTING.md**.
+> **Status:** validated on `api-oac-prod` (MOC/NERC OAC), namespace
+> `eldritchjs-sandbox`. Both serving modes pass the full smoke test (models list,
+> chat completion, streaming, GPU residency) and are torn down after each run. The
+> quantized single-GPU variant and kserve autoscaling (HPA scale-out 1→2) were
+> also validated live (2026-09-04 — see TEST-PLAN.md §4). This is an internal
+> cluster **smoke test**, not a hardened customer deliverable (single model, no
+> auth/encryption — `curl -k` against the default router cert).
 
-Target: namespace `eldritchjs-sandbox` on `api-oac-prod` (MOC/NERC OAC).
+This README is the whole picture at a glance. Two companion docs go deeper:
+- **TEST-PLAN.md** — the full procedure, prerequisites, success criteria, and the
+  record of issues hit and fixed. Read this to *run the validation properly*.
+- **TESTING.md** — hand-driven `curl`/OpenAI-client recipes for poking at a live
+  endpoint. Read this to *exercise an endpoint that's already up*.
 
-## What the pre-flight probe already confirmed
-- GPU pods schedule in this namespace and are NOT Kueue-gated (got an H100).
-- Egress to `huggingface.co` works (HTTP 200).
-- Weight-CDN egress still UNCONFIRMED (see pre-flight step 0).
+---
 
-## Model: google/gemma-4-31B-it (VERIFIED on HF)
-- License **Apache 2.0**, **UNGATED** — no license click-through, no gated-repo
-  token permission needed. HF token is optional (kept only for rate limits).
-- 30.7B dense params, BF16 (~62GB weights). Too tight for one 80GB H100 once KV
-  cache is added -> served with **tensor-parallel across 2x H100**.
-- Repo id is **case-sensitive**: capital `B` in `31B`.
-- Alternative if we ever want it on a single GPU: the QAT checkpoint
-  `google/gemma-4-31B-it-qat-w4a16-ct` (compressed-tensors for vLLM, ~1/4 size).
+## What it does
 
-## Open items to resolve BEFORE applying
-1. **HF token (optional)** — create the `hf-token` secret (see
-   02-hf-secret.example.yaml). Not strictly required for this public Apache
-   model, but improves download reliability/rate limits. A plain fine-grained
-   READ token is enough; no gated permission needed.
-2. ~~vLLM image tag~~ RESOLVED — pinned to `vllm/vllm-openai:gemma4` (CUDA 12.9).
-   This tag bundles transformers>=5.5.0; generic `:latest` fails to load the
-   gemma4 architecture. (`:gemma4-cu130` exists but needs a newer driver.)
-3. **External image pull** — confirm the cluster can pull `vllm/vllm-openai`
-   from docker.io (no blocking ImageContentSourcePolicy). RHOAI ships a
-   supported vLLM ServingRuntime we can fall back to if docker.io is blocked.
-   (Only truly verifiable at run time; pre-flight step in the runbook.)
+- Serves `google/gemma-4-31B-it` (30.7B params, BF16, ~62 GB weights) via vLLM,
+  exposing the **OpenAI-compatible API** (`/v1/models`, `/v1/chat/completions`,
+  streaming) on an edge-TLS Route.
+- The model is too tight for a single 80 GB H100 once the KV cache is added, so
+  it runs **tensor-parallel across 2× H100** (`--tensor-parallel-size=2`).
+- Weights live on a **Pure FlashBlade RWX PVC** (`pure-fb-nfsv4`), so they
+  persist across pod restarts and are never re-downloaded on a warm start.
 
-## Runbook
+## How it does it
 
-Manifests are now a kustomize base driven by `scripts/config.conf`. See
-**TEST-PLAN.md** for the full procedure. Quick version:
+Manifests are a **kustomize base + components**, driven entirely by
+`scripts/config.conf`. `up.sh` generates an overlay (`overlays/current`) from that
+config, so you edit one file and never hand-write YAML.
 
-    cd scripts
-    $EDITOR config.conf         # set namespace, TP_SIZE/GPU_COUNT, MODEL_ID, ...
-    ./up.sh                    # apply + wait for Ready + print endpoint
-    ./test.sh                  # smoke test (models, chat, GPU); --stream --gpu
+```
+base/               SHARED by both modes
+  pvc.yaml            Pure RWX PVC `model-cache` — the weight store
+  params.properties   default vLLM knobs (MODEL_ID, TP_SIZE, ...)
+  kustomization.yaml  pvc + configMapGenerator(gemma4-params)
+components/
+  lazy/               SERVE_MODE=lazy  — plain Deployment + Service + Route
+  kserve/             SERVE_MODE=kserve — ServingRuntime + InferenceService + seed Job
+overlays/current/   GENERATED by up.sh from config.conf (do not edit by hand)
+scripts/
+  config.conf           the ONE file you edit (BF16, 2× H100)
+  config.quantized.conf ready-made single-GPU w4a16 variant (CONFIG_FILE=...)
+  up.sh down.sh test.sh benchmark.sh lib.sh
+```
 
-Manual equivalent: `oc apply -k base` (defaults) or `oc apply -k overlays/current`.
+### Two serving modes (`SERVE_MODE`)
+
+Both modes serve the same API off the **same Pure PVC**; they differ in how the
+weights get onto it and what fronts vLLM. Keeping both is deliberate — it shows
+the *range* of what the compute center supports, from a quick spike to a governed
+platform deployment.
+
+| | `lazy` (default) | `kserve` |
+|---|---|---|
+| Front-end | plain `Deployment` + `Route` | KServe `InferenceService` (RawDeployment) |
+| Weights onto PVC | vLLM pulls from HuggingFace on first boot | explicit **seed Job** stages them first, then exits |
+| vLLM reads weights from | `HF_HOME=/cache` on the PVC | `pvc://model-cache/<model>` mounted read-only at `/mnt/models` |
+| Cluster requirement | GPUs + RWX storage only | + RHOAI single-model serving (KServe) |
+| Best for | quick iteration, minimal platform deps | governed serving, pre-staged HF-independent weights |
+
+In `kserve` mode `up.sh` handles the sequencing: it creates the PVC, runs the
+seed Job **to completion**, and only then applies the ServingRuntime +
+InferenceService — so vLLM never starts against an empty `/mnt/models`. It also
+publishes an external Service + edge Route (a RawDeployment predictor isn't
+directly routable) and labels the namespace `modelmesh-enabled=false`.
+
+## How to run it
+
+```
+cd scripts
+$EDITOR config.conf          # set NAMESPACE, SERVE_MODE, TP_SIZE/GPU_COUNT, MODEL_ID, ...
+./up.sh                      # generate overlay, apply, wait for Ready, print the endpoint
+```
+
+Any value in `config.conf` can be overridden by an env var of the same name
+(env wins), e.g. try the KServe path without editing the file:
+
+```
+SERVE_MODE=kserve ./up.sh
+```
+
+For the serving mode specifically there's also a `--mode lazy|kserve` flag on
+`up.sh`, `test.sh`, and `benchmark.sh` — handy when you flip modes often:
+
+```
+./up.sh --mode kserve && ./test.sh --mode kserve --stream --gpu
+```
+
+`--mode` overrides both `config.conf` and the env var; with no flag the
+config/env value is used. `down.sh` needs no mode (it tears down both).
+
+**Settable values:** `NAMESPACE`, `SERVE_MODE` (`lazy`|`kserve`), `IMAGE`,
+`MODEL_ID`, `SERVED_NAME`, `TP_SIZE`, `MAX_MODEL_LEN`, `GPU_MEM_UTIL`,
+`GPU_COUNT` (must equal `TP_SIZE`), `STORAGE_SIZE`, `HF_TOKEN` (optional — the
+model is public/ungated, so a token only improves download rate limits), plus the
+autoscaling knobs `MIN_REPLICAS`, `MAX_REPLICAS`, `SCALE_METRIC`, `SCALE_TARGET`
+(kserve only — see [Autoscaling](#autoscaling-kserve)).
+
+### Quantized single-GPU variant
+
+Serving the QAT `w4a16` checkpoint on **one** H100 instead of two is the cost/perf
+lever — same scripts, same PVC, half the GPUs. It ships as a ready-made config
+(`scripts/config.quantized.conf`, TP=1, `GPU_COUNT=1`) selected with `CONFIG_FILE`:
+
+```
+CONFIG_FILE=config.quantized.conf ./up.sh
+CONFIG_FILE=config.quantized.conf ./test.sh
+CONFIG_FILE=config.quantized.conf ./down.sh
+```
+
+The w4a16 weights are ~1/4 the BF16 size, so they load with `--tensor-parallel-size=1`
+on a single 80 GB H100 (weights + KV cache fit comfortably). vLLM **auto-detects**
+the compressed-tensors quantization from the model config — no `--quantization`
+flag needed. `CONFIG_FILE` is resolved next to the scripts, so you can run from
+anywhere, and env vars still win over it (e.g. add `SERVE_MODE=kserve`).
+
+`up.sh` creates the project if needed. First run downloads ~62 GB, so expect
+~15–20 min to Ready; `./up.sh --no-wait` returns immediately without blocking.
+
+## How to run the tests
+
+```
+cd scripts
+./test.sh                    # core checks: pod Ready, /v1/models lists gemma-4, chat completion
+./test.sh --stream --gpu     # also: SSE streaming + nvidia-smi (both H100s resident)
+```
+
+`test.sh` is mode-aware — it resolves the right pod label and route for whichever
+`SERVE_MODE` is set, prints `PASS`/`FAIL` per check, and exits non-zero if any
+fail. Reference runs pass **5/5** in both modes (GPU 0 ≈ 76 GB, GPU 1 ≈ 76 GB in
+use, confirming TP=2). For the manual `curl` equivalents, see **TESTING.md**.
+
+## Autoscaling (kserve)
+
+In `kserve` mode the predictor can scale horizontally under load. KServe
+(RawDeployment) creates a native **HorizontalPodAutoscaler** whenever
+`MAX_REPLICAS > MIN_REPLICAS`; with them equal (the default `1`/`1`) there's no HPA
+and the replica count is fixed — exactly the prior behavior.
+
+```
+# quantized variant pairs best: TP=1 → 1 GPU/replica, so 1→2 fits in 2 GPUs
+CONFIG_FILE=config.quantized.conf MAX_REPLICAS=2 ./up.sh --mode kserve
+oc get hpa,pods -l serving.kserve.io/inferenceservice=gemma4 -n <ns> -w  # watch
+./benchmark.sh --mode kserve                                              # drive load
+```
+
+`up.sh` prints the exact `watch`/`benchmark` commands when autoscaling is on.
+**GPU math:** each replica needs `TP_SIZE` GPUs, so scaling to `MAX_REPLICAS`
+requires `MAX_REPLICAS × GPU_COUNT` schedulable GPUs — otherwise the extra
+replicas sit `Pending`. That's why the single-GPU quantized config is the natural
+autoscaling demo on a 2-GPU box.
+
+| knob | default | meaning |
+|---|---|---|
+| `MIN_REPLICAS` | `1` | floor; the always-on replica count |
+| `MAX_REPLICAS` | `1` | ceiling; `> MIN` turns the HPA on |
+| `SCALE_METRIC` | `cpu` | HPA resource metric: `cpu` or `memory` |
+| `SCALE_TARGET` | `60` | target average utilization (%) that triggers scaling |
+
+**Scope / honesty:** RawDeployment's HPA scales on **resource metrics** (CPU or
+memory) because that needs only the cluster metrics-server. This demonstrates the
+*mechanism* — HPA created, replicas scale out under load and back in when idle —
+but CPU is a coarse proxy for LLM load. The production-grade signal is
+`vllm:num_requests_running` driven via **KEDA** (`autoscalerClass: keda`), or
+concurrency/RPS via Knative; both need extra platform components not assumed here.
+`down.sh` removes the HPA along with the rest.
+
+**Faster scale-out (shared compile cache).** On a cold start vLLM compiles the
+model graph (~75s here). By default that cache is a per-pod emptyDir, so every
+scaled-out replica recompiles from scratch. In `kserve` mode the ServingRuntime
+mounts a small dedicated RWX PVC (`gemma4-compile-cache`, pure-fb-nfsv4) at
+`/cache` and points `VLLM_CACHE_ROOT` there, so replica 1 populates the
+`torch_compile_cache` once and every later replica reuses it — measured
+**74.6s → 14.8s** of `torch.compile` on replica 2 (the heavy inductor compile is
+skipped). It's a *separate* claim from the weights on purpose: KServe already
+mounts the weight PVC read-only via `storageUri`, and mounting that same claim
+read-write too wedges the pod's volume mount. `down.sh` deletes it with the rest;
+`--keep-cache` preserves it (and the weights) for a fully warm re-run. (The lazy
+Deployment gets the same `VLLM_CACHE_ROOT` on its existing PVC, which only helps
+warm restarts — it's a single replica.)
+
+## Benchmarking (optional)
+
+```
+cd scripts
+./benchmark.sh                            # guidellm sweep, 60s, 256-in/128-out tokens
+./benchmark.sh --tool inference-perf      # inference-perf, constant BENCH_RATE q/s
+BENCH_MAX_SECONDS=120 ./benchmark.sh      # longer run
+```
+
+`benchmark.sh` load-tests the *running* endpoint from a **separate in-cluster
+pod**, so the numbers reflect real client→server behavior over the cluster network
+(not localhost). It's mode-aware — it hits the ClusterIP Service directly (plain
+HTTP, no router/TLS) for whichever `SERVE_MODE` is up. The endpoint must already be
+up (`./up.sh` first). Two load-test tools are selectable with `--tool` (or
+`BENCH_TOOL`):
+
+| tool | default? | load shape | notes |
+|---|---|---|---|
+| [guidellm](https://github.com/vllm-project/guidellm) | yes | **sweep** (~10 sub-benchmarks ramping concurrency to find peak throughput) | tune with `BENCH_RATE_TYPE` (`sweep`\|`throughput`\|`synchronous`) |
+| [inference-perf](https://github.com/kubernetes-sigs/inference-perf) | `--tool inference-perf` | single **constant rate** of `BENCH_RATE` req/s | uses the `random` datagen over `/v1/completions` (its synthetic generator supports completion, not chat) |
+
+Both are further env-tunable via `BENCH_MAX_SECONDS`, `BENCH_PROMPT_TOKENS`,
+`BENCH_OUTPUT_TOKENS` (guidellm sweeps concurrency; `BENCH_RATE` applies to
+inference-perf only). See **TESTING.md** for reading the results. `down.sh` cleans
+up any leftover benchmark Job and its ConfigMap.
 
 ## Teardown
 
-    cd scripts
-    ./down.sh                  # FULL: release GPUs AND delete weight cache
-    ./down.sh --keep-cache     # release GPUs, keep PVC for a fast re-run
+```
+cd scripts
+./down.sh                    # FULL: releases GPUs AND deletes the weight cache
+./down.sh --keep-cache       # releases GPUs, KEEPS the model-cache PVC for a fast re-run
+```
 
-## Notes / decisions
-- Plain Deployment + Route (not KServe) chosen for a fast dev spike. KServe is
-  available and is the "proper" path if this graduates beyond a smoke test.
-- One model per vLLM server: multi-model later = N of these, or MIG/time-slice
-  to pack several on fewer GPUs.
-- Success criteria: pod Ready, `/v1/models` lists `gemma-4`, chat completion
-  returns coherent text generated on the H100.
+`down.sh` deletes the compute for **both** serving modes (so it always releases
+the GPUs no matter which mode — or none — is set; no need to pass `SERVE_MODE`),
+plus the hashed params ConfigMap, the `hf-token` secret, any leftover benchmark
+Job, and optionally the PVCs (the weight cache and, in kserve, the shared
+compile cache), then verifies **0 GPUs held**. GPUs are what cost money;
+`--keep-cache` preserves the ~62 GB weights (and the compile cache) so the next
+`up.sh` skips the download (warm start, minutes → seconds to Ready).
+
+## Prerequisites (short version — full detail in TEST-PLAN.md)
+
+- `oc` CLI logged in; an account that can `oc new-project` (namespace-level only,
+  no node access needed). `curl` + `python3` for `test.sh`.
+- GPU nodes advertising `nvidia.com/gpu` (validated on 2× H100 80 GB nodes).
+- An RWX storage class — here `pure-fb-nfsv4` (Portworx fronting Pure FlashBlade).
+- Egress to `huggingface.co` and the weight CDN `us.aws.cdn.hf.co`.
+- Ability to pull `docker.io/vllm/vllm-openai:gemma4` (RHOAI ships a supported
+  vLLM ServingRuntime as a fallback if docker.io is blocked).
+- For `kserve` mode: RHOAI single-model serving (KServe) installed.
+
+## Gotchas worth knowing (the non-obvious bits)
+
+- **Image tag matters:** use `docker.io/vllm/vllm-openai:gemma4` — it bundles
+  `transformers ≥ 5.5.0`. Generic `:latest` fails with
+  `model type 'gemma4' not recognized`. Fully-qualify the image (CRI-O
+  short-name-mode rejects the bare name as ambiguous).
+- **Writable `HOME`:** OpenShift's `restricted` SCC runs a random high UID with
+  `HOME=/` (not writable). Both the serving container and the kserve seed Job set
+  `HOME` (and the seed sets `HF_HOME`) to writable paths; without this,
+  flashinfer/torch and the HF **Xet** download backend fail with
+  `PermissionError: [Errno 13] ... Permission denied`.
+- **Repo id is case-sensitive:** capital `B` in `google/gemma-4-31B-it`.
+- **Single-GPU alternative:** the QAT checkpoint
+  `google/gemma-4-31B-it-qat-w4a16-ct` (~1/4 size) runs at TP=1 on one H100 —
+  now a first-class config (`CONFIG_FILE=config.quantized.conf ./up.sh`, see
+  [Quantized single-GPU variant](#quantized-single-gpu-variant)).
+
+## Out of scope (would be needed for a real deliverable)
+
+Auth/TLS beyond the default router cert; revisions/model-registry (available via
+KServe/RHOAI but not exercised here); multi-model packing (one model per vLLM
+server today); RDMA/SR-IOV networking. Autoscaling *is* exercised in kserve mode,
+but only on CPU/memory HPA metrics — the production LLM signals
+(`vllm:num_requests_running` via KEDA, or concurrency/RPS via Knative) are out of
+scope. See TEST-PLAN.md §7.

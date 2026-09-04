@@ -1,0 +1,68 @@
+# In-cluster load test of the running Gemma 4 endpoint using guidellm
+# (https://github.com/vllm-project/guidellm). Runs in a SEPARATE pod from the
+# serving pod, so the numbers reflect real client -> server behavior over the
+# cluster network (not localhost).
+#
+# NOTE: this is a template. scripts/benchmark.sh substitutes the __PLACEHOLDERS__
+# (from config.conf + the resolved in-cluster service URL) and applies it with
+# `oc apply -f -`. It targets the ClusterIP Service directly (plain HTTP, no
+# router/TLS), so it works for both serving modes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gemma4-benchmark
+  labels: { app: gemma4-benchmark }
+spec:
+  backoffLimit: 0            # a benchmark either runs or it doesn't; don't retry
+  template:
+    metadata:
+      labels: { app: gemma4-benchmark }
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: guidellm
+          image: ghcr.io/vllm-project/guidellm:latest
+          # Current guidellm uses `run` with kind=key,val sub-configs (the older
+          # `benchmark --target/--processor/--rate-type/--data prompt_tokens=...`
+          # CLI no longer exists). This arg set is validated live against the
+          # endpoint — see TEST-PLAN.md.
+          command: ["guidellm", "run"]
+          args:
+            # OpenAI-compatible backend: base URL + the served model name (the
+            # server's --served-model-name), sent in each request.
+            - "--backend"
+            - "kind=openai_http,target=__TARGET__,model=__SERVED_NAME__"
+            # Load pattern. 'sweep' auto-varies concurrency (synchronous ->
+            # throughput -> a spread of constant rates) to map the latency curve.
+            - "--profile"
+            - "kind=__RATE_TYPE__"
+            # Cap each sub-benchmark by wall-clock instead of request count.
+            - "--constraint"
+            - "kind=max_duration,seconds=__MAX_SECONDS__"
+            # Synthetic workload shape.
+            - "--data"
+            - "kind=synthetic_text,prompt_tokens=__PROMPT_TOKENS__,output_tokens=__OUTPUT_TOKENS__"
+            # Real HF repo id — guidellm loads this tokenizer to build/measure
+            # prompts (the served name 'gemma-4' is not an HF id, so this is
+            # required; the model is public/ungated).
+            - "--tokenizer"
+            - "kind=huggingface_auto,model=__MODEL_ID__"
+          env:
+            # OpenShift random UID with HOME=/ (not writable) — give the tokenizer
+            # download + HF caches a writable home (same reason as the serving pod).
+            - name: HOME
+              value: "/tmp"
+            - name: HF_HOME
+              value: "/tmp/hf"
+            - name: HF_HUB_ENABLE_HF_TRANSFER
+              value: "0"
+            # guidellm writes benchmarks.{json,csv,html} here; default /results may
+            # not be writable under a random UID, so point it at /tmp.
+            - name: GUIDELLM__DEFAULT_RESULTS_DIR
+              value: "/tmp"
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef: { name: hf-token, key: token, optional: true }
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits:   { cpu: "4", memory: 8Gi }

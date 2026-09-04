@@ -1,0 +1,13 @@
+# SERVE_MODE=kserve — KServe InferenceService serving from the Pure PVC.
+# vLLM reads pre-staged weights from pvc://model-cache (mounted read-only at
+# /mnt/models) — no per-pod HuggingFace download. The weights are put there by
+# seed-job.yaml, which up.sh applies and waits on BEFORE the serving overlay, so
+# the seed Job is intentionally NOT listed here.
+# Layered onto base/ (the PVC) by the generated overlay.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - compile-cache-pvc.yaml
+  - serving-runtime.yaml
+  - inference-service.yaml
