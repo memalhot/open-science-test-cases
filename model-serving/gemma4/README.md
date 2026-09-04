@@ -7,9 +7,11 @@ kustomize base that supports **two serving modes** off the same Pure storage.
 
 > **Status:** validated on `api-oac-prod` (MOC/NERC OAC), namespace
 > `eldritchjs-sandbox`. Both serving modes pass the full smoke test (models list,
-> chat completion, streaming, GPU residency) and are torn down after each run.
-> This is an internal cluster **smoke test**, not a hardened customer deliverable
-> (single model, no auth/encryption — `curl -k` against the default router cert).
+> chat completion, streaming, GPU residency) and are torn down after each run. The
+> quantized single-GPU variant and kserve autoscaling (HPA scale-out 1→2) were
+> also validated live (2026-09-04 — see TEST-PLAN.md §4). This is an internal
+> cluster **smoke test**, not a hardened customer deliverable (single model, no
+> auth/encryption — `curl -k` against the default router cert).
 
 This README is the whole picture at a glance. Two companion docs go deeper:
 - **TEST-PLAN.md** — the full procedure, prerequisites, success criteria, and the

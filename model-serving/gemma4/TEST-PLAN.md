@@ -236,6 +236,22 @@ only). It demonstrates the mechanism; the production LLM signal
 (`vllm:num_requests_running` via KEDA, or concurrency/RPS via Knative) needs extra
 platform components and is out of scope here (§7).
 
+> **Reference run (quantized + autoscaling, 2026-09-04):** deployed with
+> `CONFIG_FILE=config.quantized.conf MAX_REPLICAS=2 ./up.sh --mode kserve`. Seed
+> completed in 89s; predictor Ready on **1** H100 (vLLM log
+> `Using MarlinLinearKernel for CompressedTensorsWNA16`, weights 19.62 GiB);
+> `test.sh --mode kserve --stream --gpu` passed **5/5** (single H100 visible).
+> **A1** HPA `gemma4-predictor` present (min 1 / max 2, cpu@60%). **A2** under a
+> guidellm sweep the GPU-bound model held CPU ~16% (below 60% — the documented
+> caveat), so `scaleTarget` was lowered to 12 via the InferenceService (the same
+> knob `SCALE_TARGET` sets); KServe propagated it and the HPA fired
+> `SuccessfulRescale → New size: 2`. The 2nd replica scheduled on the second GPU
+> (separate node), loaded, and reached `1/1` serving — confirming TP=1 lets 1→2
+> fit in 2 GPUs. Restoring the target + stopping load returned it toward min.
+> Full teardown verified **0 GPUs held**. (Observed: 2nd-replica cold start ~4.5
+> min, dominated by a fresh per-pod `torch.compile` — the compile cache is a
+> per-pod emptyDir, not shared across replicas.)
+
 ---
 
 ## 5. Issues encountered and fixes (record for the test plan)
@@ -307,9 +323,9 @@ Deleting the compute terminates the pod and **releases the GPUs immediately**.
 The PVC delete reclaims the FlashBlade space. The namespace itself can stay for
 reuse across test cycles.
 
-> **Reference-run teardowns:** full teardown (6a) executed and verified after both
-> the `lazy` (2026-08-24) and `kserve` (2026-09-02) runs — `No resources found`,
-> zero GPUs held.
+> **Reference-run teardowns:** full teardown (6a) executed and verified after the
+> `lazy` (2026-08-24), `kserve` (2026-09-02), and quantized + autoscaling `kserve`
+> (2026-09-04) runs — `No resources found`, zero GPUs held.
 
 ---
 
