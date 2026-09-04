@@ -193,6 +193,18 @@ force a demo scale-out, lower the target through the same knob the config expose
 The production-grade signal (`vllm:num_requests_running` via KEDA, or
 concurrency/RPS via Knative) needs extra platform components — see README.
 
+**Shared compile cache — why replica 2 comes up fast.** The predictor mounts a
+dedicated RWX PVC (`gemma4-compile-cache`) at `/cache` with `VLLM_CACHE_ROOT=/cache`,
+so a scaled-out replica reuses the first replica's `torch.compile` output instead
+of recompiling (~75s). Watch for it in the 2nd pod's log:
+
+    POD2=$(oc get pods -l serving.kserve.io/inferenceservice=gemma4 \
+      -n eldritchjs-sandbox --sort-by=.metadata.creationTimestamp \
+      -o jsonpath='{.items[-1].metadata.name}')
+    oc logs "$POD2" -n eldritchjs-sandbox | grep -E 'from the cache|torch.compile took'
+    # -> "Directly load the compiled graph(s) ... from the cache"
+    # -> "torch.compile took 14.78 s" (vs ~75s on the first replica)
+
 ## When you're done — tear it down (stop GPU charges)
 
     cd scripts

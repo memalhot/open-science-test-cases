@@ -174,6 +174,20 @@ but CPU is a coarse proxy for LLM load. The production-grade signal is
 concurrency/RPS via Knative; both need extra platform components not assumed here.
 `down.sh` removes the HPA along with the rest.
 
+**Faster scale-out (shared compile cache).** On a cold start vLLM compiles the
+model graph (~75s here). By default that cache is a per-pod emptyDir, so every
+scaled-out replica recompiles from scratch. In `kserve` mode the ServingRuntime
+mounts a small dedicated RWX PVC (`gemma4-compile-cache`, pure-fb-nfsv4) at
+`/cache` and points `VLLM_CACHE_ROOT` there, so replica 1 populates the
+`torch_compile_cache` once and every later replica reuses it — measured
+**74.6s → 14.8s** of `torch.compile` on replica 2 (the heavy inductor compile is
+skipped). It's a *separate* claim from the weights on purpose: KServe already
+mounts the weight PVC read-only via `storageUri`, and mounting that same claim
+read-write too wedges the pod's volume mount. `down.sh` deletes it with the rest;
+`--keep-cache` preserves it (and the weights) for a fully warm re-run. (The lazy
+Deployment gets the same `VLLM_CACHE_ROOT` on its existing PVC, which only helps
+warm restarts — it's a single replica.)
+
 ## Benchmarking (optional)
 
 ```
@@ -211,9 +225,10 @@ cd scripts
 `down.sh` deletes the compute for **both** serving modes (so it always releases
 the GPUs no matter which mode — or none — is set; no need to pass `SERVE_MODE`),
 plus the hashed params ConfigMap, the `hf-token` secret, any leftover benchmark
-Job, and optionally the PVC, then verifies **0 GPUs held**. GPUs are what cost
-money; `--keep-cache` preserves the ~62 GB weights so the next `up.sh` skips the
-download (warm start, minutes → seconds to Ready).
+Job, and optionally the PVCs (the weight cache and, in kserve, the shared
+compile cache), then verifies **0 GPUs held**. GPUs are what cost money;
+`--keep-cache` preserves the ~62 GB weights (and the compile cache) so the next
+`up.sh` skips the download (warm start, minutes → seconds to Ready).
 
 ## Prerequisites (short version — full detail in TEST-PLAN.md)
 

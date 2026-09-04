@@ -52,6 +52,19 @@ spec:
         # so no HF download is needed here).
         - name: HOME
           value: "/home/vllm"
+        # Share vLLM's torch.compile cache across replicas on the Pure PVC. On a
+        # cold start vLLM compiles the model graph (~75s here); by default that
+        # cache lives under $HOME/.cache/vllm (a per-pod emptyDir), so every
+        # scaled-out replica recompiles from scratch. VLLM_CACHE_ROOT redirects it
+        # onto the shared RWX PVC (mounted read-write at /cache below): the first
+        # replica populates <root>/torch_compile_cache/<hash>/rank_* and every
+        # later replica reuses it (the hash is keyed by model+config, so it's
+        # identical across replicas) — turning scale-out cold start into a cache
+        # hit. torch's inductor takes a file lock around cache writes, so a
+        # simultaneous cold start (e.g. minReplicas=2) at worst recompiles
+        # redundantly; it does not corrupt the cache.
+        - name: VLLM_CACHE_ROOT
+          value: "/cache"
       ports:
         - containerPort: 8080
           protocol: TCP
@@ -70,6 +83,13 @@ spec:
         # Writable HOME for flashinfer/torch caches (see HOME env above).
         - name: home
           mountPath: /home/vllm
+        # Shared, writable torch.compile cache on its own RWX PVC (see
+        # VLLM_CACHE_ROOT above and compile-cache-pvc.yaml). Deliberately a
+        # SEPARATE claim from the weights: storageUri already mounts the weight PVC
+        # read-only at /mnt/models, and mounting that same claim a second time
+        # read-write wedges the kubelet's volume-mount step.
+        - name: compile-cache
+          mountPath: /cache
   volumes:
     - name: shm
       emptyDir:
@@ -77,3 +97,10 @@ spec:
         sizeLimit: 16Gi
     - name: home
       emptyDir: {}
+    # Dedicated RWX compile-cache PVC (pure-fb-nfsv4). RWX lets every predictor
+    # replica mount it at once, which is what makes the compile cache shareable
+    # across a scale-out. See compile-cache-pvc.yaml for why it's separate from
+    # the weight PVC.
+    - name: compile-cache
+      persistentVolumeClaim:
+        claimName: gemma4-compile-cache

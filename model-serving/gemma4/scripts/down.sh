@@ -46,10 +46,12 @@ for cm in $(oc get configmap -n "$NAMESPACE" -o name 2>/dev/null | grep 'gemma4-
 done
 
 if [ "$KEEP_CACHE" -eq 1 ]; then
-  warn "Keeping PVC model-cache (weight cache preserved for a fast re-run)."
+  warn "Keeping PVCs model-cache + gemma4-compile-cache (weight & compile caches preserved for a fast re-run)."
 else
-  info "Deleting weight-cache PVC (model-cache)"
+  info "Deleting weight-cache PVC (model-cache) and compile-cache PVC (gemma4-compile-cache)"
   oc delete pvc model-cache -n "$NAMESPACE" --ignore-not-found
+  # kserve-only shared torch.compile cache (no-op in lazy, which has none).
+  oc delete pvc gemma4-compile-cache -n "$NAMESPACE" --ignore-not-found
 fi
 
 oc delete secret hf-token -n "$NAMESPACE" --ignore-not-found
