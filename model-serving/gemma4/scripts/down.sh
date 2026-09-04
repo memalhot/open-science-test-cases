@@ -28,6 +28,9 @@ oc delete deployment,service,pod -l app=gemma4-vllm -n "$NAMESPACE" --ignore-not
 # kserve: deleting the InferenceService cascades to its predictor Deployment/pods.
 oc delete inferenceservice gemma4 -n "$NAMESPACE" --ignore-not-found
 oc delete servingruntime gemma4-vllm-runtime -n "$NAMESPACE" --ignore-not-found
+# The autoscaling HPA is owned by the isvc (cascades above), but delete by name too
+# in case the isvc was already gone when a prior teardown was interrupted.
+oc delete hpa gemma4-predictor -n "$NAMESPACE" --ignore-not-found
 oc delete job gemma4-seed -n "$NAMESPACE" --ignore-not-found
 oc delete service gemma4-external -n "$NAMESPACE" --ignore-not-found
 # Routes by name — lazy: gemma4-vllm; kserve: gemma4-infer; legacy colliding: gemma4.

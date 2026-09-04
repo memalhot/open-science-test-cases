@@ -40,6 +40,12 @@ parse_mode_flag() {
 load_config() {
   need oc
   local cfg="${CONFIG_FILE:-$SCRIPT_DIR/config.conf}"
+  # Convenience: a bare CONFIG_FILE name (no slash) is resolved next to the
+  # scripts, so `CONFIG_FILE=config.quantized.conf ./up.sh` works from anywhere,
+  # not only from the scripts dir.
+  if [ ! -f "$cfg" ] && [ "${cfg##*/}" = "$cfg" ] && [ -f "$SCRIPT_DIR/$cfg" ]; then
+    cfg="$SCRIPT_DIR/$cfg"
+  fi
   [ -f "$cfg" ] || die "config not found: $cfg"
   # Values already set in the environment must win over the file (e.g.
   #   SERVE_MODE=kserve ./up.sh). Snapshot the env-provided config keys as PLAIN
@@ -48,7 +54,8 @@ load_config() {
   # function-local vars that vanish on return, so the env values were lost.)
   local __k __snap; __snap="$(mktemp)"
   for __k in NAMESPACE SERVE_MODE IMAGE MODEL_ID SERVED_NAME TP_SIZE \
-             MAX_MODEL_LEN GPU_MEM_UTIL GPU_COUNT STORAGE_SIZE HF_TOKEN; do
+             MAX_MODEL_LEN GPU_MEM_UTIL GPU_COUNT STORAGE_SIZE HF_TOKEN \
+             MIN_REPLICAS MAX_REPLICAS SCALE_METRIC SCALE_TARGET; do
     [ -n "${!__k+x}" ] && printf '%s=%q\n' "$__k" "${!__k}" >>"$__snap"
   done
   # shellcheck disable=SC1090
@@ -58,6 +65,18 @@ load_config() {
     "${TP_SIZE:?}" "${MAX_MODEL_LEN:?}" "${GPU_MEM_UTIL:?}" \
     "${GPU_COUNT:?}" "${STORAGE_SIZE:?}"
   HF_TOKEN="${HF_TOKEN:-}"
+  # Autoscaling knobs default to a fixed single replica (no HPA) so a config.conf
+  # predating these keys keeps its original behavior.
+  MIN_REPLICAS="${MIN_REPLICAS:-1}"
+  MAX_REPLICAS="${MAX_REPLICAS:-1}"
+  SCALE_METRIC="${SCALE_METRIC:-cpu}"
+  SCALE_TARGET="${SCALE_TARGET:-60}"
+  [ "$MAX_REPLICAS" -ge "$MIN_REPLICAS" ] \
+    || die "MAX_REPLICAS ($MAX_REPLICAS) must be >= MIN_REPLICAS ($MIN_REPLICAS)"
+  case "$SCALE_METRIC" in
+    cpu|memory) ;;
+    *) die "invalid SCALE_METRIC '$SCALE_METRIC' (RawDeployment HPA supports 'cpu' or 'memory'; concurrency/rps need Knative, vLLM metrics need KEDA)" ;;
+  esac
   # Default to the original mechanism so pre-existing configs keep working.
   SERVE_MODE="${SERVE_MODE:-lazy}"
   case "$SERVE_MODE" in

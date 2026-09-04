@@ -15,6 +15,12 @@ load_config
 WAIT=1
 [ "${1:-}" = "--no-wait" ] && WAIT=0
 
+# Autoscaling is a kserve-only feature (lazy is a plain fixed Deployment). If the
+# user asked for a range but is in lazy mode, say so rather than silently ignoring.
+if [ "$SERVE_MODE" = "lazy" ] && [ "$MAX_REPLICAS" != "$MIN_REPLICAS" ]; then
+  warn "MAX_REPLICAS=$MAX_REPLICAS is ignored in lazy mode (no autoscaler); use --mode kserve for HPA."
+fi
+
 # Split IMAGE into name and tag for the kustomize images transformer.
 if [[ "$IMAGE" == *:* ]]; then
   IMAGE_NAME="${IMAGE%:*}"; IMAGE_TAG="${IMAGE##*:}"
@@ -104,6 +110,22 @@ patches:
       - op: replace
         path: /spec/predictor/model/storageUri
         value: "pvc://model-cache/${MODEL_SUBPATH}"
+      # Autoscaling: KServe RawDeployment creates a native HPA when
+      # maxReplicas > minReplicas, using scaleMetric/scaleTarget. Equal values
+      # (the default) leave the predictor at a fixed replica count (no HPA).
+      # Integers unquoted so the CRD sees numbers, not strings.
+      - op: replace
+        path: /spec/predictor/minReplicas
+        value: ${MIN_REPLICAS}
+      - op: replace
+        path: /spec/predictor/maxReplicas
+        value: ${MAX_REPLICAS}
+      - op: add
+        path: /spec/predictor/scaleMetric
+        value: ${SCALE_METRIC}
+      - op: add
+        path: /spec/predictor/scaleTarget
+        value: ${SCALE_TARGET}
   - target: { kind: PersistentVolumeClaim, name: model-cache }
     patch: |-
       - op: replace
@@ -204,3 +226,8 @@ echo
 echo "  Test it:   ./test.sh"
 echo "  Mode:      $SERVE_MODE"
 echo "  Model:     $MODEL_ID  (served as '$SERVED_NAME', TP=$TP_SIZE on $GPU_COUNT GPU[s])"
+if [ "$SERVE_MODE" = "kserve" ] && [ "$MAX_REPLICAS" != "$MIN_REPLICAS" ]; then
+  echo "  Autoscale: HPA on $SCALE_METRIC @ ${SCALE_TARGET}%, $MIN_REPLICAS-$MAX_REPLICAS replicas (needs up to $((MAX_REPLICAS*GPU_COUNT)) GPU[s])"
+  echo "             watch it:  oc get hpa,pods -l serving.kserve.io/inferenceservice=gemma4 -n $NAMESPACE -w"
+  echo "             drive it:  ./benchmark.sh --mode kserve   (load raises $SCALE_METRIC → scales out)"
+fi
