@@ -42,8 +42,11 @@ OUTPUT_TOKENS="${BENCH_OUTPUT_TOKENS:-128}"
 
 # --- resolve the in-cluster target by serving mode ---
 case "$SERVE_MODE" in
-  lazy)   SVC="gemma4-vllm";     PORT=8000 ;;   # the lazy ClusterIP Service
-  kserve) SVC="gemma4-external"; PORT=80  ;;    # the external Service up.sh creates (80->8080)
+  lazy)       SVC="gemma4-vllm";      PORT=8000 ;;  # the lazy ClusterIP Service
+  kserve)     SVC="gemma4-external";  PORT=80  ;;   # the external Service up.sh creates (80->8080)
+  serverless) SVC="gemma4-predictor"; PORT=80  ;;   # the Knative route Service (in-cluster;
+                                                    # traffic flows via the activator, which is
+                                                    # exactly what drives KPA concurrency scaling)
 esac
 TARGET="http://${SVC}.${NAMESPACE}.svc.cluster.local:${PORT}"
 

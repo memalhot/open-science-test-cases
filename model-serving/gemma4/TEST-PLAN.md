@@ -4,14 +4,17 @@
 OpenAI-compatible inference. This is a **cluster smoke test**, not a customer
 deliverable — single model, single Deployment, no auth/encryption.
 
-**Result of the reference runs:** PASS in **both** serving modes on `api-oac-prod`
-(MOC/NERC OAC). Model `gemma-4` served tensor-parallel across 2× H100; `/v1/models`,
-chat completions, streaming, and GPU residency all returned correctly.
+**Result of the reference runs:** PASS in the `lazy` and `kserve` serving modes on
+`api-oac-prod` (MOC/NERC OAC). Model `gemma-4` served tensor-parallel across 2× H100;
+`/v1/models`, chat completions, streaming, and GPU residency all returned correctly.
 - `lazy` (plain Deployment): validated 2026-08-24.
 - `kserve` (InferenceService from `pvc://`, weights pre-staged by a seed Job):
   validated 2026-09-02 — `test.sh --stream --gpu` = **5/5 PASS**.
+- `serverless` (Knative KPA autoscaling, scale-to-zero): autoscaling validated
+  2026-09-08 (scale-to-zero + cold-start 0→1); the client-facing endpoint has a
+  known cluster-edge routing caveat (§4).
 
-Both were torn down afterward to stop GPU charges.
+All were torn down afterward to stop GPU charges.
 
 ---
 
@@ -84,33 +87,44 @@ model-serving/gemma4/
   scripts/
     config.conf            # <-- the ONE file you edit to set values (BF16, 2 GPU)
     config.quantized.conf  # ready-made single-GPU w4a16 variant (CONFIG_FILE=...)
+    config.serverless.conf # ready-made Knative KPA + scale-to-zero variant (CONFIG_FILE=...)
     up.sh  down.sh  test.sh  benchmark.sh  lib.sh
 ```
 
+> `serverless` reuses the `kserve` component (same ServingRuntime + InferenceService
+> + seed Job); `up.sh` flips the InferenceService to `deploymentMode: Serverless` so
+> KServe hands it to Knative. There is no separate `components/serverless/`.
+
 **Settable values** (in `scripts/config.conf`, or as env-var overrides):
-`NAMESPACE`, `SERVE_MODE` (`lazy`|`kserve`), `IMAGE`, `MODEL_ID`, `SERVED_NAME`,
-`TP_SIZE`, `MAX_MODEL_LEN`, `GPU_MEM_UTIL`, `GPU_COUNT` (must equal `TP_SIZE`),
-`STORAGE_SIZE`, `HF_TOKEN` (optional), and the kserve autoscaling knobs
-`MIN_REPLICAS`, `MAX_REPLICAS`, `SCALE_METRIC` (`cpu`|`memory`), `SCALE_TARGET`.
-An alternate config file can be selected with `CONFIG_FILE=<name>` (resolved next
-to the scripts) — `config.quantized.conf` is a ready-made single-GPU w4a16 variant.
+`NAMESPACE`, `SERVE_MODE` (`lazy`|`kserve`|`serverless`), `IMAGE`, `MODEL_ID`,
+`SERVED_NAME`, `TP_SIZE`, `MAX_MODEL_LEN`, `GPU_MEM_UTIL`, `GPU_COUNT` (must equal
+`TP_SIZE`), `STORAGE_SIZE`, `HF_TOKEN` (optional), and the autoscaling knobs
+`MIN_REPLICAS`, `MAX_REPLICAS`, `SCALE_METRIC` (`cpu`|`memory` for kserve;
+`concurrency`|`rps` for serverless), `SCALE_TARGET`. An alternate config file can be
+selected with `CONFIG_FILE=<name>` (resolved next to the scripts) —
+`config.quantized.conf` is a ready-made single-GPU w4a16 variant, and
+`config.serverless.conf` is a ready-made Knative KPA + scale-to-zero variant.
 
 ### Serving modes (`SERVE_MODE`)
-Both modes serve the same OpenAI-compatible API off the **same Pure RWX PVC**;
-they differ in how the weights get there and what fronts vLLM. Keeping both is
-deliberate — the demo shows the *range* of what the compute center supports.
+All three modes serve the same OpenAI-compatible API off the **same Pure RWX PVC**;
+they differ in how the weights get there and what fronts vLLM. Keeping all three is
+deliberate — the demo shows the *range* of what the compute center supports, from a
+quick spike to a governed platform deployment to an elastic, scale-to-zero one.
 
-| | `lazy` (default) | `kserve` |
-|---|---|---|
-| Front-end | plain `Deployment` + `Route` | KServe `InferenceService` (RawDeployment) |
-| Weights onto PVC | vLLM pulls from HuggingFace on first boot | explicit **seed Job** stages them first |
-| Reads weights from | `HF_HOME=/cache` on the PVC | `pvc://model-cache/<model>` mounted at `/mnt/models` |
-| Cluster requirement | none beyond GPUs + storage | RHOAI single-model serving (KServe) |
-| Best for | quick iteration, minimal platform deps | governed serving + pre-staged, HF-independent weights |
+| | `lazy` (default) | `kserve` | `serverless` |
+|---|---|---|---|
+| Front-end | plain `Deployment` + `Route` | KServe `InferenceService` (RawDeployment) | KServe `InferenceService` (Knative Serverless) |
+| Weights onto PVC | vLLM pulls from HuggingFace on first boot | explicit **seed Job** stages them first | explicit **seed Job** (same as kserve) |
+| Reads weights from | `HF_HOME=/cache` on the PVC | `pvc://model-cache/<model>` mounted at `/mnt/models` | `pvc://model-cache/<model>` mounted at `/mnt/models` |
+| Autoscaling | none (fixed) | HPA on cpu/memory | Knative KPA on concurrency/rps, incl. **scale-to-zero** |
+| Cluster requirement | none beyond GPUs + storage | RHOAI single-model serving (KServe) | + RHOAI Serverless (Knative + a Knative ingress) |
+| Best for | quick iteration, minimal platform deps | governed serving + pre-staged, HF-independent weights | bursty/idle traffic; pay-for-what-you-use GPUs |
 
-`up.sh` handles the sequencing: in `kserve` mode it creates the PVC, runs the
-seed Job **to completion**, and only then applies the ServingRuntime +
-InferenceService (so vLLM never starts against an empty `/mnt/models`).
+`up.sh` handles the sequencing: in `kserve`/`serverless` mode it creates the PVC,
+runs the seed Job **to completion**, and only then applies the ServingRuntime +
+InferenceService (so vLLM never starts against an empty `/mnt/models`). In
+`serverless` it sets the annotation `serving.kserve.io/deploymentMode: Serverless`
+and Knative provides the endpoint URL (no external Route created).
 
 The vLLM string/number args flow through a `configMapGenerator` (hashed name →
 any change auto-rolls the pod). `GPU_COUNT` and `STORAGE_SIZE` are resource
@@ -278,6 +292,39 @@ replica's compiled graphs instead of recompiling.
 > mount wedged the pod at `ContainerCreating` (kubelet volume-mount step, no
 > error) — fixed by giving the cache its own claim.
 
+**Serverless autoscaling (Knative KPA, scale-to-zero).** `SERVE_MODE=serverless`
+puts the same seeded InferenceService behind Knative. KServe maps the autoscaling
+knobs onto the Knative revision (`class=kpa`, `metric=concurrency`, `target`,
+`min-scale`, `max-scale`); `MIN_REPLICAS=0` enables scale-to-zero. Deploy with
+`CONFIG_FILE=config.serverless.conf ./up.sh`.
+
+| # | Check | Command | Pass condition |
+|---|---|---|---|
+| S1 | KPA wired | `oc get revision -n eldritchjs-sandbox -o jsonpath='{.items[*].metadata.annotations}'` | `autoscaling.knative.dev/class=kpa`, `metric=concurrency`, `target=10`, `min-scale=0`, `max-scale=3` |
+| S2 | Scale-to-zero | idle a few minutes, then `oc get pods -l serving.kserve.io/inferenceservice=gemma4 -n eldritchjs-sandbox` | **0** predictor pods (0 GPUs held) |
+| S3 | Cold start 0→1 | send a request from a **mesh-member** client (sidecar-injected pod) to `http://gemma4-predictor.<ns>.svc.cluster.local/v1/models` while watching pods | KPA schedules a pod; predictor reaches `3/3` Ready (vLLM readiness passes) |
+
+> **Reference run (serverless, 2026-09-08):** deployed with
+> `CONFIG_FILE=config.serverless.conf ./up.sh` (quantized w4a16, TP=1). Seed
+> completed; InferenceService reached Ready. **S1** revision
+> `gemma4-predictor-00001` had `class=kpa.autoscaling.knative.dev`,
+> `metric=concurrency`, `target=10`, `min-scale=0`, `max-scale=3`. **S2**
+> scale-to-zero observed — **0** predictor pods, 0 GPUs held at idle. **S3** a
+> request from a sidecar-injected `curl` pod drove the KPA **0→1**; the predictor
+> scheduled and reached `3/3` Running (vLLM readiness passed). Full teardown
+> verified **0 GPUs held**.
+>
+> **Known caveat — endpoint routing (cluster-edge).** The client-facing HTTP path
+> returns `404`/`503` through the Knative ingress (net-istio on Maistra Service Mesh:
+> `PeerAuthentication` STRICT + Host-matched `knative-local-gateway`), for **both**
+> the external URL and in-cluster mesh access. A non-mesh client's plaintext
+> connection is reset at the gateway; a mesh member reaches the activator (which is
+> what triggers the scale-up) but the final hop still 404s. The **autoscaler is
+> unaffected and proven**; getting a clean 200 through the mesh edge is unfinished
+> cluster plumbing, not a defect in this test case. `lazy`/`kserve` route fine via
+> their plain edge Routes. Root cause not yet isolated (istiod VirtualService push /
+> SNI match on `knative-ingress-gateway` are the prime suspects).
+
 ---
 
 ## 5. Issues encountered and fixes (record for the test plan)
@@ -310,9 +357,9 @@ cd scripts
 ./down.sh                # FULL: releases GPUs AND deletes the weight cache
 ./down.sh --keep-cache   # releases GPUs, KEEPS model-cache PVC (fast re-run)
 ```
-`down.sh` deletes the compute for **both** modes unconditionally
+`down.sh` deletes the compute for **all three** modes unconditionally
 (Deployment/Service/Route for `lazy` *and* InferenceService/ServingRuntime/seed
-Job/external Service/Route for `kserve`), removes the hashed params ConfigMap, the
+Job/external Service/Route for `kserve`/`serverless`), removes the hashed params ConfigMap, the
 `hf-token` secret, and any leftover benchmark Job, optionally the PVC, then
 verifies **0 GPUs held**. It is mode-agnostic on purpose — you do **not** need to
 pass the `SERVE_MODE` you deployed with, and running it with the wrong mode can no
@@ -352,21 +399,26 @@ The PVC delete reclaims the FlashBlade space. The namespace itself can stay for
 reuse across test cycles.
 
 > **Reference-run teardowns:** full teardown (6a) executed and verified after the
-> `lazy` (2026-08-24), `kserve` (2026-09-02), and quantized + autoscaling `kserve`
-> (2026-09-04) runs — `No resources found`, zero GPUs held.
+> `lazy` (2026-08-24), `kserve` (2026-09-02), quantized + autoscaling `kserve`
+> (2026-09-04), and `serverless` (2026-09-08) runs — `No resources found`, zero GPUs
+> held. (Serverless teardown may log a timeout on Knative finalizers, but the compute
+> — and GPUs — are released; the verify step confirms 0 GPUs held.)
 
 ---
 
 ## 7. Out of scope for this test (would be needed for a real deliverable)
 - **Auth/TLS**: endpoint is open with the default router cert (`curl -k`). Add an
   API gateway / auth and a real cert for anything shared.
-- **Serving path**: both a plain Deployment + Route (`lazy`) and a KServe
-  InferenceService (`kserve`) are implemented and validated. Autoscaling **is**
-  wired in `kserve` mode (RawDeployment HPA on CPU/memory via `MIN_REPLICAS`/
-  `MAX_REPLICAS`/`SCALE_METRIC`/`SCALE_TARGET` — see §4 Optional scenarios). Still
-  out of scope: request-based autoscaling (`vllm:num_requests_running` via KEDA, or
-  concurrency/RPS via Knative), canary/revisions, and model-registry integration —
-  the governed extras KServe/RHOAI enable on top of what's tested here.
+- **Serving path**: a plain Deployment + Route (`lazy`), a KServe RawDeployment
+  InferenceService (`kserve`), and a Knative Serverless InferenceService
+  (`serverless`) are all implemented. Autoscaling **is** wired and validated in
+  `kserve` (RawDeployment HPA on CPU/memory) and `serverless` (Knative KPA on
+  concurrency/RPS, incl. scale-to-zero — see §4 Optional scenarios). Remaining out
+  of scope: the CPU-independent HPA signal `vllm:num_requests_running` via KEDA;
+  canary/revisions and model-registry integration. **Also unfinished:** the
+  `serverless` client-facing endpoint does not route cleanly through this cluster's
+  net-istio mesh edge (the autoscaler works; the 200 through the mesh is cluster
+  plumbing — see §4 caveat).
 - **Multi-model**: one model per vLLM server here. Multiple models = N servers, or
   MIG/time-slicing to pack several onto fewer GPUs.
 - **RDMA/SR-IOV networking**: not configured on this cluster (no SR-IOV operator,

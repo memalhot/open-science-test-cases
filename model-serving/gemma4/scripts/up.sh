@@ -5,9 +5,11 @@
 #   ./up.sh --mode kserve      # override SERVE_MODE for this run (else config.conf/env)
 #
 # SERVE_MODE selects the mechanism (set in config.conf, or per-run via --mode / env):
-#   lazy   = plain Deployment; vLLM pulls weights from HF into the Pure PVC.
-#   kserve = seed Job stages weights onto the PVC, then a KServe InferenceService
-#            serves them from pvc://model-cache.
+#   lazy       = plain Deployment; vLLM pulls weights from HF into the Pure PVC.
+#   kserve     = seed Job stages weights onto the PVC, then a KServe InferenceService
+#                serves them from pvc://model-cache (RawDeployment; HPA autoscaling).
+#   serverless = same seed + InferenceService, but Knative-backed (KServe Serverless):
+#                KPA autoscaling on concurrency/rps, incl. scale-to-zero.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 parse_mode_flag "$@"; set -- ${REST_ARGS[@]+"${REST_ARGS[@]}"}
 load_config
@@ -15,10 +17,19 @@ load_config
 WAIT=1
 [ "${1:-}" = "--no-wait" ] && WAIT=0
 
-# Autoscaling is a kserve-only feature (lazy is a plain fixed Deployment). If the
-# user asked for a range but is in lazy mode, say so rather than silently ignoring.
+# Serverless reuses the kserve component (same ServingRuntime, seed Job, PVCs, and
+# compile cache); only the InferenceService patch (deploymentMode + KPA knobs) and
+# the routing differ, both handled below. So the kustomize component dir is decoupled
+# from SERVE_MODE: serverless -> components/kserve, everything else -> its own dir.
+case "$SERVE_MODE" in
+  serverless) COMPONENT=kserve ;;
+  *)          COMPONENT="$SERVE_MODE" ;;
+esac
+
+# Autoscaling is a kserve/serverless feature (lazy is a plain fixed Deployment). If
+# the user asked for a range but is in lazy mode, say so rather than silently ignoring.
 if [ "$SERVE_MODE" = "lazy" ] && [ "$MAX_REPLICAS" != "$MIN_REPLICAS" ]; then
-  warn "MAX_REPLICAS=$MAX_REPLICAS is ignored in lazy mode (no autoscaler); use --mode kserve for HPA."
+  warn "MAX_REPLICAS=$MAX_REPLICAS is ignored in lazy mode (no autoscaler); use --mode kserve or --mode serverless."
 fi
 
 # Split IMAGE into name and tag for the kustomize images transformer.
@@ -44,9 +55,9 @@ namespace: ${NAMESPACE}
 resources:
   - ../../base
 
-# Serving mechanism for SERVE_MODE=${SERVE_MODE}.
+# Serving mechanism for SERVE_MODE=${SERVE_MODE} (serverless reuses the kserve component).
 components:
-  - ../../components/${SERVE_MODE}
+  - ../../components/${COMPONENT}
 
 # Override the tunable vLLM args from config.conf (consumed by the lazy
 # Deployment; the kserve runtime gets the same values via the args patch below).
@@ -86,9 +97,10 @@ patches:
         value: ${STORAGE_SIZE}
 EOF
 else
-  # kserve: inject the config.conf tunables into the runtime args (no ConfigMap —
-  # kustomize does not rewrite ConfigMap refs inside a CRD), set the GPU limit,
-  # point the InferenceService at the seeded PVC subpath, and size the PVC.
+  # kserve/serverless: inject the config.conf tunables into the runtime args (no
+  # ConfigMap — kustomize does not rewrite ConfigMap refs inside a CRD) and set the
+  # GPU limit. The ServingRuntime + PVC patches are identical across the two; only
+  # the InferenceService patch (deploymentMode + autoscaler) differs, emitted next.
   cat >>"$OVERLAY_DIR/kustomization.yaml" <<EOF
 patches:
   - target: { kind: ServingRuntime, name: gemma4-vllm-runtime }
@@ -105,6 +117,41 @@ patches:
       - op: replace
         path: /spec/containers/0/resources/limits/nvidia.com~1gpu
         value: "${GPU_COUNT}"
+EOF
+  if [ "$SERVE_MODE" = "serverless" ]; then
+    cat >>"$OVERLAY_DIR/kustomization.yaml" <<EOF
+  - target: { kind: InferenceService, name: gemma4 }
+    patch: |-
+      # Switch the base RawDeployment isvc to Knative Serverless, and autoscale on
+      # the Knative Pod Autoscaler (KPA). KServe maps scaleMetric/scaleTarget/
+      # min/maxReplicas onto the Knative revision. minReplicas=0 => scale-to-zero.
+      - op: replace
+        path: /metadata/annotations/serving.kserve.io~1deploymentMode
+        value: Serverless
+      # No RHOAI auth on this dev endpoint (match the curl -k, no-token ethos);
+      # harmless if the operator doesn't consume this annotation.
+      - op: add
+        path: /metadata/annotations/security.opendatahub.io~1enable-auth
+        value: "false"
+      - op: replace
+        path: /spec/predictor/model/storageUri
+        value: "pvc://model-cache/${MODEL_SUBPATH}"
+      # Integers unquoted so the CRD sees numbers, not strings.
+      - op: replace
+        path: /spec/predictor/minReplicas
+        value: ${MIN_REPLICAS}
+      - op: replace
+        path: /spec/predictor/maxReplicas
+        value: ${MAX_REPLICAS}
+      - op: add
+        path: /spec/predictor/scaleMetric
+        value: ${SCALE_METRIC}
+      - op: add
+        path: /spec/predictor/scaleTarget
+        value: ${SCALE_TARGET}
+EOF
+  else
+    cat >>"$OVERLAY_DIR/kustomization.yaml" <<EOF
   - target: { kind: InferenceService, name: gemma4 }
     patch: |-
       - op: replace
@@ -126,6 +173,9 @@ patches:
       - op: add
         path: /spec/predictor/scaleTarget
         value: ${SCALE_TARGET}
+EOF
+  fi
+  cat >>"$OVERLAY_DIR/kustomization.yaml" <<EOF
   - target: { kind: PersistentVolumeClaim, name: model-cache }
     patch: |-
       - op: replace
@@ -201,22 +251,28 @@ else
   info "Waiting for the InferenceService to become Ready..."
   oc wait --for=condition=Ready inferenceservice/gemma4 -n "$NAMESPACE" --timeout=1800s
 
-  # KServe RawDeployment's predictor service isn't directly routable; publish an
-  # explicit external service + edge route (same approach as the granite path).
-  # IMPORTANT: create the route only AFTER the InferenceService is Ready. While the
-  # isvc is still progressing, KServe actively reconciles it and prunes an
-  # externally-facing route sharing the isvc's name (this isvc is cluster-local),
-  # so a route created earlier gets deleted out from under us. Once Ready (steady
-  # state) KServe leaves it alone. Idempotent, and errors are NOT swallowed
-  # (a hidden failure once left a Ready isvc with no reachable endpoint).
-  info "Creating external service and route"
-  if ! oc get service gemma4-external -n "$NAMESPACE" >/dev/null 2>&1; then
-    oc create service clusterip gemma4-external --tcp=80:8080 -n "$NAMESPACE"
-  fi
-  oc set selector service gemma4-external app=isvc.gemma4-predictor -n "$NAMESPACE"
-  if ! oc get route "$ROUTE_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
-    oc create route edge "$ROUTE_NAME" --service=gemma4-external --port=80-8080 \
-      -n "$NAMESPACE"
+  if [ "$SERVE_MODE" = "kserve" ]; then
+    # KServe RawDeployment's predictor service isn't directly routable; publish an
+    # explicit external service + edge route (same approach as the granite path).
+    # IMPORTANT: create the route only AFTER the InferenceService is Ready. While the
+    # isvc is still progressing, KServe actively reconciles it and prunes an
+    # externally-facing route sharing the isvc's name (this isvc is cluster-local),
+    # so a route created earlier gets deleted out from under us. Once Ready (steady
+    # state) KServe leaves it alone. Idempotent, and errors are NOT swallowed
+    # (a hidden failure once left a Ready isvc with no reachable endpoint).
+    info "Creating external service and route"
+    if ! oc get service gemma4-external -n "$NAMESPACE" >/dev/null 2>&1; then
+      oc create service clusterip gemma4-external --tcp=80:8080 -n "$NAMESPACE"
+    fi
+    oc set selector service gemma4-external app=isvc.gemma4-predictor -n "$NAMESPACE"
+    if ! oc get route "$ROUTE_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+      oc create route edge "$ROUTE_NAME" --service=gemma4-external --port=80-8080 \
+        -n "$NAMESPACE"
+    fi
+  else
+    # serverless: Knative (via net-istio) already provides the external URL; nothing
+    # for us to create. The endpoint is the InferenceService status.url (route_url).
+    info "Serverless: Knative provides the endpoint (no external route to create)"
   fi
 fi
 
@@ -230,4 +286,11 @@ if [ "$SERVE_MODE" = "kserve" ] && [ "$MAX_REPLICAS" != "$MIN_REPLICAS" ]; then
   echo "  Autoscale: HPA on $SCALE_METRIC @ ${SCALE_TARGET}%, $MIN_REPLICAS-$MAX_REPLICAS replicas (needs up to $((MAX_REPLICAS*GPU_COUNT)) GPU[s])"
   echo "             watch it:  oc get hpa,pods -l serving.kserve.io/inferenceservice=gemma4 -n $NAMESPACE -w"
   echo "             drive it:  ./benchmark.sh --mode kserve   (load raises $SCALE_METRIC → scales out)"
+fi
+if [ "$SERVE_MODE" = "serverless" ]; then
+  z=""; [ "$MIN_REPLICAS" -eq 0 ] && z=" (scale-to-zero)"
+  echo "  Autoscale: Knative KPA on $SCALE_METRIC (target $SCALE_TARGET), $MIN_REPLICAS-$MAX_REPLICAS replicas${z} (up to $((MAX_REPLICAS*GPU_COUNT)) GPU[s] under load)"
+  echo "             watch it:  oc get pods -l serving.kserve.io/inferenceservice=gemma4 -n $NAMESPACE -w"
+  echo "             drive it:  ./benchmark.sh --mode serverless   (concurrent load → scales out)"
+  [ "$MIN_REPLICAS" -eq 0 ] && echo "             idle -> the predictor scales to 0 pods; the next request cold-starts it"
 fi

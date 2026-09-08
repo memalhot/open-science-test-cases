@@ -27,7 +27,7 @@ parse_mode_flag() {
   REST_ARGS=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --mode)   shift; [ "$#" -gt 0 ] || die "--mode needs a value (lazy|kserve)"
+      --mode)   shift; [ "$#" -gt 0 ] || die "--mode needs a value (lazy|kserve|serverless)"
                 SERVE_MODE="$1" ;;
       --mode=*) SERVE_MODE="${1#--mode=}" ;;
       *)        REST_ARGS+=("$1") ;;
@@ -65,20 +65,25 @@ load_config() {
     "${TP_SIZE:?}" "${MAX_MODEL_LEN:?}" "${GPU_MEM_UTIL:?}" \
     "${GPU_COUNT:?}" "${STORAGE_SIZE:?}"
   HF_TOKEN="${HF_TOKEN:-}"
-  # Autoscaling knobs default to a fixed single replica (no HPA) so a config.conf
-  # predating these keys keeps its original behavior.
-  MIN_REPLICAS="${MIN_REPLICAS:-1}"
-  MAX_REPLICAS="${MAX_REPLICAS:-1}"
-  SCALE_METRIC="${SCALE_METRIC:-cpu}"
-  SCALE_TARGET="${SCALE_TARGET:-60}"
-  [ "$MAX_REPLICAS" -ge "$MIN_REPLICAS" ] \
-    || die "MAX_REPLICAS ($MAX_REPLICAS) must be >= MIN_REPLICAS ($MIN_REPLICAS)"
-  case "$SCALE_METRIC" in
-    cpu|memory) ;;
-    *) die "invalid SCALE_METRIC '$SCALE_METRIC' (RawDeployment HPA supports 'cpu' or 'memory'; concurrency/rps need Knative, vLLM metrics need KEDA)" ;;
-  esac
   # Default to the original mechanism so pre-existing configs keep working.
   SERVE_MODE="${SERVE_MODE:-lazy}"
+  # Autoscaling knobs. The sensible default metric depends on the mode's
+  # autoscaler, so pick it after SERVE_MODE is known:
+  #   kserve     (RawDeployment HPA)  -> resource metric: cpu, target 60%.
+  #   serverless (Knative KPA)        -> concurrency, target 10 in-flight/replica.
+  # Replica bounds default to a fixed single replica (no autoscaling) so a
+  # config.conf predating these keys keeps its original behavior.
+  MIN_REPLICAS="${MIN_REPLICAS:-1}"
+  MAX_REPLICAS="${MAX_REPLICAS:-1}"
+  if [ "$SERVE_MODE" = "serverless" ]; then
+    SCALE_METRIC="${SCALE_METRIC:-concurrency}"
+    SCALE_TARGET="${SCALE_TARGET:-10}"
+  else
+    SCALE_METRIC="${SCALE_METRIC:-cpu}"
+    SCALE_TARGET="${SCALE_TARGET:-60}"
+  fi
+  [ "$MAX_REPLICAS" -ge "$MIN_REPLICAS" ] \
+    || die "MAX_REPLICAS ($MAX_REPLICAS) must be >= MIN_REPLICAS ($MIN_REPLICAS)"
   case "$SERVE_MODE" in
     lazy)
       APP_LABEL="app=gemma4-vllm"
@@ -92,9 +97,27 @@ load_config() {
       # cluster-local isvc), so we use a distinct name it never touches.
       APP_LABEL="serving.kserve.io/inferenceservice=gemma4"
       ROUTE_NAME="gemma4-infer"
+      [ "$MIN_REPLICAS" -ge 1 ] \
+        || die "MIN_REPLICAS ($MIN_REPLICAS) must be >= 1 in kserve mode (RawDeployment HPA cannot scale to zero — use SERVE_MODE=serverless for scale-to-zero)"
+      case "$SCALE_METRIC" in
+        cpu|memory) ;;
+        *) die "invalid SCALE_METRIC '$SCALE_METRIC' for kserve (RawDeployment HPA supports 'cpu' or 'memory'; use SERVE_MODE=serverless for 'concurrency'/'rps' via Knative)" ;;
+      esac
+      ;;
+    serverless)
+      # KServe Serverless (Knative). Predictor pods carry the same KServe label,
+      # but routing is owned by Knative (via net-istio) — there is no OpenShift
+      # Route we create. route_url() reads the InferenceService's status.url.
+      # MIN_REPLICAS=0 enables scale-to-zero (KPA + activator front the pods).
+      APP_LABEL="serving.kserve.io/inferenceservice=gemma4"
+      ROUTE_NAME=""   # unused; the external URL comes from isvc status.url
+      case "$SCALE_METRIC" in
+        concurrency|rps) ;;
+        *) die "invalid SCALE_METRIC '$SCALE_METRIC' for serverless (Knative KPA supports 'concurrency' or 'rps'; use SERVE_MODE=kserve for cpu/memory HPA)" ;;
+      esac
       ;;
     *)
-      die "invalid SERVE_MODE '$SERVE_MODE' (expected 'lazy' or 'kserve')"
+      die "invalid SERVE_MODE '$SERVE_MODE' (expected 'lazy', 'kserve', or 'serverless')"
       ;;
   esac
   # PVC subpath the weights live under (kserve seed + storageUri); basename of id.
@@ -104,6 +127,14 @@ load_config() {
 
 route_url() {
   local host
+  if [ "$SERVE_MODE" = "serverless" ]; then
+    # Serverless: Knative owns routing; the external URL (scheme included) is the
+    # InferenceService's status.url. Print it verbatim (may be http or https) and
+    # succeed even when it isn't populated yet (empty output, like the route path).
+    oc get inferenceservice gemma4 -n "$NAMESPACE" \
+      -o jsonpath='{.status.url}' 2>/dev/null || true
+    return 0
+  fi
   host="$(oc get route "$ROUTE_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
   [ -n "$host" ] && printf 'https://%s' "$host"
   # Always succeed: a missing route yields empty output, not a non-zero exit. The
