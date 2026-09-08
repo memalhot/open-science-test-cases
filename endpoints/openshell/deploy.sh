@@ -102,11 +102,38 @@ helm template openshell "$HELM_CHART" \
     > /tmp/openshell-manifests.yaml
 
 echo "Applying manifests with system:admin..."
-# Apply cluster-scoped and openshell namespace resources
-oc apply -f /tmp/openshell-manifests.yaml -n "$OPENSHELL_NAMESPACE" --as system:admin 2>&1 | grep -v "the namespace from the provided object.*does not match" || true
+# The rendered manifest mixes objects from two namespaces plus namespace-less
+# ones (gateway StatefulSet/Service/ConfigMap/SA + cluster-scoped RBAC). Objects
+# destined for the sandbox namespace carry an explicit `namespace:` line; the
+# rest either target the gateway namespace or are cluster-scoped.
+#
+# Split by declared namespace so each group is applied to the right place.
+# Applying the whole file to BOTH namespaces (the old approach) stamped the
+# namespace-less gateway objects into the sandbox namespace too, creating a
+# broken duplicate gateway (StatefulSet "openshell" stuck in $SANDBOX_NAMESPACE).
+# awk appends with >>, so clear any previous split first.
+rm -f /tmp/openshell-sandbox-ns.yaml /tmp/openshell-main.yaml
+awk -v sbns="$SANDBOX_NAMESPACE" \
+    -v sbfile=/tmp/openshell-sandbox-ns.yaml \
+    -v mainfile=/tmp/openshell-main.yaml '
+  function flush(){
+    if (doc == "") return
+    if (doc ~ ("\n[[:space:]]*namespace:[[:space:]]*" sbns "[[:space:]]*\n"))
+      printf "---\n%s", doc >> sbfile
+    else
+      printf "---\n%s", doc >> mainfile
+    doc=""
+  }
+  /^---[[:space:]]*$/ { flush(); next }
+  { doc = doc $0 "\n" }
+  END { flush() }
+' /tmp/openshell-manifests.yaml
 
-# Apply sandbox namespace resources
-oc apply -f /tmp/openshell-manifests.yaml -n "$SANDBOX_NAMESPACE" --as system:admin 2>&1 | grep -v "the namespace from the provided object.*does not match" || true
+# Gateway namespace + cluster-scoped resources (namespace-less objects default here).
+oc apply -f /tmp/openshell-main.yaml -n "$OPENSHELL_NAMESPACE" --as system:admin
+# Sandbox namespace resources (each carries its own namespace).
+[ -s /tmp/openshell-sandbox-ns.yaml ] && \
+  oc apply -f /tmp/openshell-sandbox-ns.yaml -n "$SANDBOX_NAMESPACE" --as system:admin
 
 echo "✓ Manifests applied"
 echo "Waiting for resources to be ready..."

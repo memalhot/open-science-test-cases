@@ -5,11 +5,24 @@
 server:
   disableTls: true
 
+  # DEMO-ONLY / UNSAFE: accept unauthenticated CLI requests. The gateway ships
+  # no OIDC issuer and no mTLS client certs, so an external `openshell` CLI has
+  # no credential to present and is otherwise rejected with
+  # "missing authorization header". This flag lets the plaintext local
+  # registration (`openshell gateway add http://127.0.0.1:8080 --local`) work.
+  # Do NOT enable on a shared/production gateway — configure OIDC instead.
+  auth:
+    allowUnauthenticatedUsers: true
+
   # Kubernetes driver configuration
   drivers:
     kubernetes:
-      # Auto-create per-workspace namespaces
-      workspaceMode: managed
+      # "shared": all sandboxes land in the single sandboxNamespace below, which
+      # deploy.sh grants the privileged SCC. "managed" auto-creates per-workspace
+      # namespaces (e.g. openshell-openshell-default) which lack OpenShift's SCC
+      # annotation openshift.io/sa.scc.mcs, so sandbox pods are forbidden:
+      #   pods "..." is forbidden: ... unable to find annotation openshift.io/sa.scc.mcs
+      workspaceMode: shared
 
   # Sandbox configuration
   sandboxNamespace: openshell-sandboxes

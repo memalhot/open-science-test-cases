@@ -1,0 +1,17 @@
+# OpenShell network_policies: per-binary allowlist, fail-closed.
+# github.com is intentionally absent -> denied by default.
+network_policies:
+  anthropic_api:
+    name: anthropic_api
+    endpoints:
+      - host: api.anthropic.com
+        port: 443
+    binaries:
+      - { path: /usr/local/bin/claude }
+  contrast_allow:
+    name: contrast_allow
+    endpoints:
+      - host: ${ALLOW_HOST}
+        port: 443
+    binaries:
+      - { path: /usr/bin/curl }
