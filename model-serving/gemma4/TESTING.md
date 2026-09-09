@@ -8,18 +8,25 @@ The server speaks the OpenAI-compatible API. Model is served under the name
 
 ## 0. Get the endpoint URL
 
-The Route name depends on the serving mode it was deployed with (`lazy` uses
-`gemma4-vllm`; `kserve` uses `gemma4-infer`):
+The endpoint depends on the serving mode it was deployed with (`lazy` uses Route
+`gemma4-vllm`; `kserve` uses Route `gemma4-infer`; `serverless` has no Route —
+Knative provides the URL on the InferenceService status):
 
     # lazy (default):
     URL="https://$(oc get route gemma4-vllm -n eldritchjs-sandbox -o jsonpath='{.spec.host}')"
     # kserve:
     URL="https://$(oc get route gemma4-infer -n eldritchjs-sandbox -o jsonpath='{.spec.host}')"
+    # serverless (Knative):
+    URL="$(oc get inferenceservice gemma4 -n eldritchjs-sandbox -o jsonpath='{.status.url}')"
     echo "$URL"
 
 (The router uses its default cert, so add `-k` to curl to skip cert validation.)
 Everything below is identical across modes — same OpenAI API, same `gemma-4`
 model name.
+
+> **Serverless caveat:** on this cluster the Knative endpoint 404s/503s through the
+> net-istio mesh edge (see §10). The autoscaler works; the client-facing 200 is
+> unfinished cluster plumbing. Use `lazy`/`kserve` for hands-on `curl` here.
 
 ## 1. Is it alive? List the model
 
@@ -69,8 +76,9 @@ You'll see `data: {...}` SSE chunks, ending with `data: [DONE]`.
 
 ## 5. Confirm it's really running on the GPUs
 
-The pod label differs by mode (`lazy`: `app=gemma4-vllm`; `kserve`:
-`serving.kserve.io/inferenceservice=gemma4`):
+The pod label differs by mode (`lazy`: `app=gemma4-vllm`; `kserve` and
+`serverless` both use `serving.kserve.io/inferenceservice=gemma4` — but under
+`serverless` there may be **zero** pods at idle, scaled to zero):
 
     # lazy:
     POD=$(oc get pod -l app=gemma4-vllm -n eldritchjs-sandbox -o jsonpath='{.items[0].metadata.name}')
@@ -107,7 +115,10 @@ rather than localhost.
 
 The endpoint must already be up (`./up.sh` first) — this benchmarks it, it doesn't
 deploy it. It's mode-aware: `lazy` targets Service `gemma4-vllm:8000`, `kserve`
-targets the external Service `gemma4-external:80`.
+targets the external Service `gemma4-external:80`, and `serverless` targets the
+Knative route Service `gemma4-predictor:80` (which drives KPA concurrency — but note
+the mesh-edge caveat in §10: in-cluster traffic must originate from a mesh member to
+reach the Knative gateway).
 
 **Two tools, pick with `--tool` (or `BENCH_TOOL`):**
 
@@ -204,6 +215,53 @@ of recompiling (~75s). Watch for it in the 2nd pod's log:
     oc logs "$POD2" -n eldritchjs-sandbox | grep -E 'from the cache|torch.compile took'
     # -> "Directly load the compiled graph(s) ... from the cache"
     # -> "torch.compile took 14.78 s" (vs ~75s on the first replica)
+
+## 10. Watch it autoscale on concurrency, incl. scale-to-zero (serverless)
+
+`serverless` mode puts the same seeded InferenceService behind Knative, so the
+Knative Pod Autoscaler (KPA) scales on **concurrency** and, with `MIN_REPLICAS=0`,
+all the way to **zero**. Bring it up with the ready-made config:
+
+    cd scripts
+    CONFIG_FILE=config.serverless.conf ./up.sh
+
+Confirm the KPA wiring on the Knative revision:
+
+    oc get revision -n eldritchjs-sandbox \
+      -o custom-columns=NAME:.metadata.name,\
+CLASS:'.metadata.annotations.autoscaling\.knative\.dev/class',\
+METRIC:'.metadata.annotations.autoscaling\.knative\.dev/metric',\
+TARGET:'.metadata.annotations.autoscaling\.knative\.dev/target',\
+MIN:'.metadata.annotations.autoscaling\.knative\.dev/min-scale',\
+MAX:'.metadata.annotations.autoscaling\.knative\.dev/max-scale'
+    # -> CLASS kpa.autoscaling.knative.dev  METRIC concurrency  TARGET 10  MIN 0  MAX 3
+
+Watch the predictor scale 0↔N (at idle it settles to **zero pods → zero GPUs**):
+
+    oc get pods -l serving.kserve.io/inferenceservice=gemma4 -n eldritchjs-sandbox -w
+
+**Cold start (0→1).** A request while scaled to zero is buffered by the Knative
+activator, which triggers the KPA to schedule a pod; the pod compiles + loads
+weights, then serves. On this cluster the client-facing request must come from a
+**mesh member** (STRICT mTLS at the `knative-local-gateway`), so a throwaway
+non-mesh `curl` pod gets its plaintext connection reset. A sidecar-injected pod
+reaches the gateway (and triggers the scale-up):
+
+    # a mesh-member client (note the sidecar inject annotation)
+    oc run curltest -n eldritchjs-sandbox --restart=Never \
+      --image=docker.io/curlimages/curl:latest \
+      --annotations='sidecar.istio.io/inject=true' --command -- sleep 600
+    oc wait --for=condition=Ready pod/curltest -n eldritchjs-sandbox --timeout=120s
+    # this request cold-starts the predictor (0 -> 1); watch the -w window above
+    oc exec curltest -c curltest -n eldritchjs-sandbox -- \
+      curl -s -m 300 -w '\nHTTP=%{http_code}\n' \
+      http://gemma4-predictor.eldritchjs-sandbox.svc.cluster.local/v1/models
+
+**Known caveat (validated 2026-09-08).** The scale-up fires correctly (0→1, pod
+reaches `3/3` Ready), but the response 404s/503s through the mesh edge — the same
+net-istio routing gap that affects the external URL. The **autoscaler is proven**;
+the clean 200 through the mesh is unfinished cluster plumbing. See README
+[Autoscaling](#autoscaling-kserve--serverless) and TEST-PLAN.md §4.
 
 ## When you're done — tear it down (stop GPU charges)
 

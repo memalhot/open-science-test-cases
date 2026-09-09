@@ -3,7 +3,7 @@
 #   ./test.sh                 # run the core checks (models, chat, GPU residency)
 #   ./test.sh --stream        # also run a streaming check
 #   ./test.sh --gpu           # also run nvidia-smi inside the pod
-#   ./test.sh --mode kserve   # override SERVE_MODE for this run (else config.conf/env)
+#   ./test.sh --mode kserve   # override SERVE_MODE for this run (lazy|kserve|serverless)
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 parse_mode_flag "$@"; set -- ${REST_ARGS[@]+"${REST_ARGS[@]}"}
 load_config
@@ -24,12 +24,26 @@ ok()   { printf '%s  PASS%s %s\n' "$c_grn" "$c_rst" "$*"; pass=$((pass+1)); }
 bad()  { printf '%s  FAIL%s %s\n' "$c_red" "$c_rst" "$*"; fail=$((fail+1)); }
 
 # --- 0. endpoint + pod ---
-URL="$(route_url)"; [ -n "$URL" ] || die "no route found in $NAMESPACE — is it deployed?"
+URL="$(route_url)"; [ -n "$URL" ] || die "no endpoint found in $NAMESPACE — is it deployed?"
 info "Endpoint: $URL"
 
-ready="$(oc get pod -l "$APP_LABEL" -n "$NAMESPACE" \
-  -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null || true)"
-[ "$ready" = "true" ] && ok "pod is Ready" || bad "pod not Ready (got '${ready:-none}')"
+if [ "$SERVE_MODE" = "serverless" ]; then
+  # Scale-to-zero: there may be no pod at all until a request arrives, so a running
+  # pod is the wrong liveness signal. Send a wake-up request with a generous timeout
+  # (a cold start from zero includes scheduling + model load) and treat endpoint
+  # reachability as the readiness check. This also warms the pod for checks 1-4.
+  info "serverless: sending a wake-up request (cold start from zero can take 1-2 min)..."
+  warm="$(curl -sk --max-time 300 "$URL/v1/models" || true)"
+  if printf '%s' "$warm" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if '$SERVED_NAME' in [m['id'] for m in d.get('data',[])] else 1)" 2>/dev/null; then
+    ok "endpoint reachable (cold-started from zero if it was idle)"
+  else
+    bad "endpoint not reachable (response: ${warm:0:200})"
+  fi
+else
+  ready="$(oc get pod -l "$APP_LABEL" -n "$NAMESPACE" \
+    -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null || true)"
+  [ "$ready" = "true" ] && ok "pod is Ready" || bad "pod not Ready (got '${ready:-none}')"
+fi
 
 # --- 1. list models ---
 models="$(curl -sk --max-time 30 "$URL/v1/models" || true)"
