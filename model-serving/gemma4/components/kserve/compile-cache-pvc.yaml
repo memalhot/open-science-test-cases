@@ -1,0 +1,26 @@
+# Shared torch.compile cache PVC for the KServe path.
+#
+# WHY A SEPARATE PVC (not the model-cache one): KServe mounts the weight PVC
+# read-only at /mnt/models via the InferenceService storageUri, adding its own
+# `kserve-pvc-source` volume for the claim. If the ServingRuntime *also* mounts
+# that same claim read-write for the cache, the pod ends up with two volumes
+# bound to one PVC with conflicting ro/rw options — which wedges the kubelet at
+# the volume-mount step (pod stuck ContainerCreating indefinitely, no error).
+# A dedicated claim sidesteps that entirely.
+#
+# RWX (pure-fb-nfsv4 / FlashBlade NFS) so every predictor replica can mount it at
+# once: replica 1 populates <root>/torch_compile_cache/<hash>/rank_* on a cold
+# start and every scaled-out replica reuses it, turning the ~75s recompile into a
+# cache hit. Small — compiled graphs are tens of MB — 20Gi is plenty of headroom.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gemma4-compile-cache
+  labels: { app: gemma4-vllm }
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: pure-fb-nfsv4
+  resources:
+    requests:
+      storage: 20Gi

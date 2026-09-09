@@ -1,0 +1,105 @@
+# In-cluster load test of the running Gemma 4 endpoint using inference-perf
+# (https://github.com/kubernetes-sigs/inference-perf) — the alternative to
+# guidellm. Runs in a SEPARATE pod from the serving pod, hitting the ClusterIP
+# Service directly (plain HTTP, no router/TLS), so the numbers reflect real
+# client -> server behavior over the cluster network.
+#
+# NOTE: this is a template. scripts/benchmark.sh substitutes the __PLACEHOLDERS__
+# and applies it with `oc apply -f -`. inference-perf is config-file driven, so the
+# workload is a ConfigMap mounted at /etc/config/config.yml (the project's own
+# deploy/ Helm chart uses the same ConfigMap+Job shape).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gemma4-benchmark-config
+  labels: { app: gemma4-benchmark }
+data:
+  config.yml: |
+    # Constant-rate load: __RATE__ requests/sec for __MAX_SECONDS__s.
+    load:
+      type: constant
+      stages:
+        - rate: __RATE__
+          duration: __MAX_SECONDS__
+    api:
+      # inference-perf's `random` datagen supports the completion API only (its
+      # get_supported_apis() returns [Completion]); `chat` raises "Unsupported API
+      # type". vLLM serves /v1/completions for the instruct model just fine, and
+      # completion keeps the no-download synthetic prompts below.
+      type: completion
+      streaming: true       # needed for TTFT / inter-token-latency metrics
+    server:
+      type: vllm
+      model_name: __SERVED_NAME__     # the server's --served-model-name
+      base_url: __TARGET__            # in-cluster ClusterIP Service URL
+      ignore_eos: true               # generate the full output length for stable numbers
+    tokenizer:
+      # Real HF repo id — inference-perf tokenizes to build synthetic prompts of a
+      # target length (the served name 'gemma-4' is not an HF id). Model is public.
+      pretrained_model_name_or_path: __MODEL_ID__
+    data:
+      type: random          # synthetic prompts (no external dataset download)
+      input_distribution:   # fixed-length prompts: min=max=mean, std_dev=0
+        min: __PROMPT_TOKENS__
+        max: __PROMPT_TOKENS__
+        mean: __PROMPT_TOKENS__
+        std_dev: 0
+        total_count: 100
+      output_distribution:
+        min: __OUTPUT_TOKENS__
+        max: __OUTPUT_TOKENS__
+        mean: __OUTPUT_TOKENS__
+        std_dev: 0
+        total_count: 100
+    metrics:
+      type: default         # client-side only — avoids the Prometheus dependency
+    report:
+      request_lifecycle:
+        summary: true       # the summary table printed to the log
+        per_stage: true
+        per_request: false
+    storage:
+      local_storage:
+        # Reports must go somewhere writable (random UID, HOME=/).
+        path: /tmp/reports-{timestamp}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gemma4-benchmark
+  labels: { app: gemma4-benchmark }
+spec:
+  backoffLimit: 0            # a benchmark either runs or it doesn't; don't retry
+  template:
+    metadata:
+      labels: { app: gemma4-benchmark }
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: inference-perf
+          image: quay.io/inference-perf/inference-perf:latest
+          command: ["inference-perf", "--config_file", "/etc/config/config.yml"]
+          env:
+            # OpenShift random UID with HOME=/ (not writable) — give the tokenizer
+            # download + HF caches a writable home (same reason as the serving pod).
+            - name: HOME
+              value: "/tmp"
+            - name: HF_HOME
+              value: "/tmp/hf"
+            - name: HF_HUB_ENABLE_HF_TRANSFER
+              value: "0"
+            # inference-perf reads HF_TOKEN (optional; the model is public/ungated).
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef: { name: hf-token, key: token, optional: true }
+          volumeMounts:
+            - name: config
+              mountPath: /etc/config
+              readOnly: true
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits:   { cpu: "4", memory: 8Gi }
+      volumes:
+        - name: config
+          configMap:
+            name: gemma4-benchmark-config

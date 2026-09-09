@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Automated smoke test of the running Gemma 4 endpoint (mirrors TESTING.md).
-#   ./test.sh           # run the core checks (models, chat, GPU residency)
-#   ./test.sh --stream  # also run a streaming check
-#   ./test.sh --gpu     # also run nvidia-smi inside the pod
+#   ./test.sh                 # run the core checks (models, chat, GPU residency)
+#   ./test.sh --stream        # also run a streaming check
+#   ./test.sh --gpu           # also run nvidia-smi inside the pod
+#   ./test.sh --mode kserve   # override SERVE_MODE for this run (else config.conf/env)
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+parse_mode_flag "$@"; set -- ${REST_ARGS[@]+"${REST_ARGS[@]}"}
 load_config
 need curl
 need python3

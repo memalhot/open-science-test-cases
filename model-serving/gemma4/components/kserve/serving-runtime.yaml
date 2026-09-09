@@ -1,0 +1,106 @@
+# vLLM ServingRuntime for the KServe (SERVE_MODE=kserve) path.
+# Deliberately NOT the granite runtime image (quay.io/modh/vllm): that RHOAI build
+# predates the gemma4 architecture and fails with "model type 'gemma4' not
+# recognized". We reuse the same gemma4-capable image as the lazy Deployment
+# (transformers >= 5.5.0); the overlay's `images:` transformer rewrites the tag.
+# The weights are served from /mnt/models, which KServe mounts read-only from the
+# Pure PVC via the InferenceService storageUri (pvc://model-cache/...).
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: gemma4-vllm-runtime
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    openshift.io/display-name: vLLM Gemma 4 ServingRuntime
+spec:
+  multiModel: false
+  supportedModelFormats:
+    - name: vLLM
+      autoSelect: true
+  containers:
+    - name: kserve-container
+      # Overridden (name+tag) by the generated overlay's images: transformer.
+      image: docker.io/vllm/vllm-openai:gemma4
+      # The vllm-openai image ships `python3` (no `python` symlink); its own
+      # entrypoint is `python3 -m vllm.entrypoints.openai.api_server`. Using
+      # `python` here fails with "executable file `python` not found in $PATH".
+      command:
+        - python3
+        - -m
+        - vllm.entrypoints.openai.api_server
+      # These are DEFAULTS. kustomize does not reliably rewrite ConfigMap
+      # references inside a CRD, so the kserve path does not use gemma4-params;
+      # instead the generated overlay (scripts/up.sh) replaces this whole args
+      # list with the literal values from scripts/config.conf via a JSON6902
+      # patch. Editing them here only affects a bare `oc apply -k` without up.sh.
+      args:
+        # Weights are on the PVC, mounted by KServe at /mnt/models.
+        - "--model=/mnt/models"
+        - "--served-model-name=gemma-4"
+        - "--tensor-parallel-size=2"
+        - "--max-model-len=8192"
+        - "--gpu-memory-utilization=0.90"
+        - "--port=8080"
+      env:
+        # OpenShift runs the pod as a random UID with HOME=/ (not writable).
+        # flashinfer/torch write JIT + kernel caches under ~/.cache, so an
+        # unwritable HOME crashes vLLM at startup with
+        #   PermissionError: [Errno 13] Permission denied: '/.cache'
+        # Point HOME at a writable emptyDir (weights are already on /mnt/models,
+        # so no HF download is needed here).
+        - name: HOME
+          value: "/home/vllm"
+        # Share vLLM's torch.compile cache across replicas on the Pure PVC. On a
+        # cold start vLLM compiles the model graph (~75s here); by default that
+        # cache lives under $HOME/.cache/vllm (a per-pod emptyDir), so every
+        # scaled-out replica recompiles from scratch. VLLM_CACHE_ROOT redirects it
+        # onto the shared RWX PVC (mounted read-write at /cache below): the first
+        # replica populates <root>/torch_compile_cache/<hash>/rank_* and every
+        # later replica reuses it (the hash is keyed by model+config, so it's
+        # identical across replicas) — turning scale-out cold start into a cache
+        # hit. torch's inductor takes a file lock around cache writes, so a
+        # simultaneous cold start (e.g. minReplicas=2) at worst recompiles
+        # redundantly; it does not corrupt the cache.
+        - name: VLLM_CACHE_ROOT
+          value: "/cache"
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      resources:
+        requests:
+          cpu: "8"
+          memory: 48Gi
+        limits:
+          # Overridden by the overlay to GPU_COUNT (== TP_SIZE).
+          nvidia.com/gpu: "2"
+          memory: 96Gi
+      volumeMounts:
+        # vLLM needs a large /dev/shm for NCCL when TP > 1.
+        - name: shm
+          mountPath: /dev/shm
+        # Writable HOME for flashinfer/torch caches (see HOME env above).
+        - name: home
+          mountPath: /home/vllm
+        # Shared, writable torch.compile cache on its own RWX PVC (see
+        # VLLM_CACHE_ROOT above and compile-cache-pvc.yaml). Deliberately a
+        # SEPARATE claim from the weights: storageUri already mounts the weight PVC
+        # read-only at /mnt/models, and mounting that same claim a second time
+        # read-write wedges the kubelet's volume-mount step.
+        - name: compile-cache
+          mountPath: /cache
+  volumes:
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 16Gi
+    - name: home
+      emptyDir: {}
+    # Dedicated RWX compile-cache PVC (pure-fb-nfsv4). RWX lets every predictor
+    # replica mount it at once, which is what makes the compile cache shareable
+    # across a scale-out. See compile-cache-pvc.yaml for why it's separate from
+    # the weight PVC.
+    - name: compile-cache
+      persistentVolumeClaim:
+        claimName: gemma4-compile-cache

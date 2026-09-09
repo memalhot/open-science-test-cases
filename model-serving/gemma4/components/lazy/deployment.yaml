@@ -10,6 +10,12 @@ metadata:
   labels: { app: gemma4-vllm }
 spec:
   replicas: 1
+  # A cold first run pulls the ~22GB image AND ~62GB of weights before the pod
+  # goes Ready — well past the 600s default. Without this, the Deployment is
+  # marked failed (Progressing=False) mid-download and `oc rollout status` in
+  # up.sh exits non-zero even though the pod comes up fine. Align it with the
+  # startup-probe budget / up.sh's rollout timeout.
+  progressDeadlineSeconds: 1800
   selector:
     matchLabels: { app: gemma4-vllm }
   template:
@@ -57,6 +63,12 @@ spec:
             # --- static env ---
             - name: HF_HOME
               value: "/cache"              # weights land on the PVC, not ephemeral
+            - name: VLLM_CACHE_ROOT
+              # Put vLLM's torch.compile cache on the PVC too (a /vllm subdir next
+              # to HF's /cache/hub). Only one replica runs in lazy mode, so this
+              # buys warm-restart reuse — a restarted pod skips the ~75s recompile —
+              # rather than cross-replica sharing (that's the kserve path's win).
+              value: "/cache/vllm"
             - name: HOME
               # OpenShift runs a random UID with HOME=/ (not writable). Point it
               # at a writable emptyDir so flashinfer/torch caches (~/.cache) work.

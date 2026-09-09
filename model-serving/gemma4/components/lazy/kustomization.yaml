@@ -1,0 +1,12 @@
+# SERVE_MODE=lazy — the original serving mechanism.
+# A plain Deployment runs vLLM, which downloads the weights from HuggingFace into
+# the shared Pure PVC on first boot (HF_HOME=/cache). No KServe required, so this
+# mode works even on a cluster without the RHOAI single-model serving stack.
+# Layered onto base/ (PVC + gemma4-params ConfigMap) by the generated overlay.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - route.yaml

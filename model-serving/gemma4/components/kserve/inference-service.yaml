@@ -1,0 +1,32 @@
+# KServe InferenceService for the SERVE_MODE=kserve path.
+# RawDeployment (no Knative/Serverless dependency) — a Deployment + Service under
+# the hood, mirroring the lazy path's footprint but managed by the KServe CRD.
+# Weights are served straight from the Pure PVC: storageUri pvc://<claim>/<path>
+# makes KServe mount that subpath at /mnt/models read-only — no S3, no per-pod
+# HuggingFace download. The weights must already be staged there by the seed Job
+# (components/kserve/seed-job.yaml), which up.sh runs to completion first.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: gemma4
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    openshift.io/display-name: gemma4
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    model:
+      modelFormat:
+        name: vLLM
+      runtime: gemma4-vllm-runtime
+      # <path> must match where the seed Job writes the weights.
+      storageUri: pvc://model-cache/gemma-4-31b
+    # NFD taints GPU nodes with nvidia.com/gpu.product=<PRODUCT>:NoSchedule;
+    # tolerate the key regardless of value (GPU selection is via the request).
+    tolerations:
+      - key: nvidia.com/gpu.product
+        operator: Exists
+        effect: NoSchedule
