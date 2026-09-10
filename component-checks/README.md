@@ -9,6 +9,8 @@ cd component-checks
 ./checks.sh          # operator & platform readiness
 ./taint-checks.sh    # GPU node labels & taints
 ./negative-tests.sh  # failure-mode & teardown tests
+./rwx.sh             # ReadWriteMany shared storage
+./rwx-cleanup.sh     # tear down rwx.sh resources
 ```
 
 Requires `oc` CLI authenticated to the target cluster.
@@ -102,6 +104,23 @@ Verifies that the platform fails predictably — workloads that can't be schedul
 The last two health checks catch problems from any workload in the namespace, not just the test resources — run them before going on vacation.
 
 Creates temporary `neg-test-*` pods that are cleaned up automatically on exit.
+
+### RWX Shared Storage (`rwx.sh`)
+
+Verifies that ReadWriteMany volumes actually work across nodes — the access mode fine-tuning and multi-replica serving depend on.
+
+| Test | Expected Behavior |
+|------|-------------------|
+| RWX PVC provisioning | PVC binds within 120s on `STORAGE_CLASS` |
+| Two pods, one PVC | Both mount the volume and reach `Ready` |
+| Cross-pod visibility | Each pod sees the other's file in `/shared` |
+| Write-then-read | File written by pod 1 is readable by pod 2 |
+
+Defaults to `STORAGE_CLASS=pure-fb-nfsv4` (Pure FlashBlade over NFS). Override with `NAMESPACE`, `PVC_NAME`, `STORAGE_CLASS`, or `SIZE`.
+
+Check the reported pod placement: if both pods land on the same node, the test passes trivially and proves nothing about RWX. A genuine result needs two distinct `NODE` values.
+
+Unlike `negative-tests.sh`, this script leaves its PVC and pods running so you can inspect them — run `./rwx-cleanup.sh` when done. Cleanup is safe to re-run.
 
 ## Output
 
