@@ -11,6 +11,7 @@
 | Negative / Failure-Mode Tests | Verifies that resource over-requests go Pending (not silently queued), pod deletions complete cleanly, and no workloads are stuck Terminating or orphaned Pending | Platform Readiness | Done | 7 passed, 0 failed | [component-checks/negative-tests.sh](https://github.com/memalhot/open-science-test-cases/tree/main/component-checks/negative-tests.sh) |
 | Agent Deployment | Validates agent deployment with Rossoctl operator, covering AgentCard/AgentRuntime CRDs, protocol labels, service discovery, and pod lifecycle | Agent Platform | Done | 16 passed, 3 warnings (optional features: AuthBridge, SPIFFE, OTEL) | [agent-deployment](https://github.com/memalhot/open-science-test-cases/tree/main/agent-deployment) |
 | Label & Taint Checks | Verifies GPU node labels (NFD, gpu.count, gpu.product, gpu.memory) and taints (nvidia.com/gpu.product:NoSchedule) to ensure proper GPU isolation | Platform Readiness | Done | Taints configured | [component-checks/taint-checks.sh](https://github.com/memalhot/open-science-test-cases/tree/main/component-checks/taint-checks.sh) |
+| Read Write Many Checks | Checks if two pods can write to same pvc | Done | Both pods can access the same filesystem | [component-checks/rwx.sh](https://github.com/memalhot/open-science-test-cases/tree/main/component-checks/rwx.sh) |
 
 ## AI Inference UAT Results
 
