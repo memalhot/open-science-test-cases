@@ -159,6 +159,38 @@ check_gpu_node_labels() {
   done
 }
 
+check_csvs() {
+  echo ""
+  echo "=== ClusterServiceVersions ==="
+
+  local csvs
+  csvs=$(oc get csv -A -l '!olm.copiedFrom' \
+    -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.status.phase}{"\n"}{end}' 2>/dev/null || echo "")
+
+  if [[ -z "${csvs}" ]]; then
+    echo ""
+    echo "--- ClusterServiceVersions ---"
+    echo "FAIL (no ClusterServiceVersions found)" >&2
+    FAILED=$((FAILED + 1))
+    return
+  fi
+
+  while IFS='|' read -r ns name phase; do
+    [[ -z "${name}" ]] && continue
+
+    echo ""
+    echo "--- CSV: ${name} (${ns}) ---"
+
+    if [[ "${phase}" == "Succeeded" ]]; then
+      echo "PASS (phase: Succeeded)"
+      PASSED=$((PASSED + 1))
+    else
+      echo "FAIL (phase: ${phase:-unknown})" >&2
+      FAILED=$((FAILED + 1))
+    fi
+  done <<< "${csvs}"
+}
+
 check_pods_running() {
   local label_selector="$1"
   local namespace="$2"
@@ -196,6 +228,10 @@ check_deployment "knative-openshift" "openshift-serverless" "OpenShift Serverles
 check_deployment "istio-operator" "openshift-operators" "OpenShift Service Mesh"
 check_deployment "nvidia-network-operator-controller-manager" "nvidia-network-operator" "NVIDIA Network Operator"
 # check_deployment "sriov-network-operator" "openshift-sriov-network-operator" "SR-IOV Network Operator"
+
+# --- ClusterServiceVersions ---
+
+check_csvs
 
 # --- Configuration & Component Readiness ---
 

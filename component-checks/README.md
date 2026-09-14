@@ -33,6 +33,10 @@ Verifies each operator's Deployment has `Available: True`.
 | NVIDIA Maintenance Operator | `maintenance-operator-controller-manager` | `nvidia-maintenance-operator` |
 | NVIDIA NIC Configuration Operator | `nic-configuration-operator` | `nvidia-network-operator` |
 
+### ClusterServiceVersions
+
+Lists every non-copied CSV cluster-wide (`oc get csv -A -l '!olm.copiedFrom'`) and verifies each is in `phase: Succeeded`. Catches operators that installed but later failed, and upgrades stuck mid-`Replacing`.
+
 ### Configuration & Component Readiness
 
 | Configuration | Expected State |
