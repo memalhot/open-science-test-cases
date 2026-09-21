@@ -7,6 +7,7 @@ Validates that all OpenShift operators, configurations, and RHOAI components req
 ```bash
 cd component-checks
 ./checks.sh          # operator & platform readiness
+./oc-virt-checks.sh  # OpenShift Virtualization (CNV) health
 ./taint-checks.sh    # GPU node labels & taints
 ./negative-tests.sh  # failure-mode & teardown tests
 ./rwx.sh             # ReadWriteMany shared storage
@@ -83,6 +84,42 @@ Separate script for GPU node label and taint validation. For each node with `nvi
 | Resource | Expected State |
 |----------|---------------|
 | ServiceMeshControlPlane | `Ready: True` |
+
+### OpenShift Virtualization (`oc-virt-checks.sh`)
+
+Verifies the OpenShift Virtualization (CNV) stack is installed and healthy. Defaults to namespace `openshift-cnv`; override with `CNV_NAMESPACE`.
+
+**Operators** — each Deployment `Available: True`:
+
+`hco-operator`, `hco-webhook`, `virt-operator`, `cdi-operator`, `cluster-network-addons-operator`, `ssp-operator`, `hostpath-provisioner-operator`, `aaq-operator`, `kubevirt-migration-operator`
+
+Plus the `kubevirt-hyperconverged-operator` CSV in `phase: Succeeded`.
+
+**Control plane** — `virt-api`, `virt-controller`, `virt-exportproxy`, `virt-template-validator`, `kubevirt-apiserver-proxy`, `kubevirt-console-plugin`, `kubevirt-migration-controller`
+
+**Data plane** — DaemonSets fully rolled out (`numberReady == desiredNumberScheduled`, zero unavailable): `virt-handler`, `bridge-marker`, `kube-cni-linux-bridge-plugin`
+
+**Storage & data import** — `cdi-apiserver`, `cdi-deployment`, `cdi-uploadproxy`
+
+**Networking** — `kubemacpool-cert-manager`, `kubemacpool-mac-controller-manager`, `kubevirt-ipam-controller-manager`
+
+**Custom resources:**
+
+| Resource | Expected State |
+|----------|---------------|
+| HyperConverged | `Available: True`, `ReconcileComplete: True`, `Progressing: False`, `Degraded: False`, `Upgradeable: True` |
+| KubeVirt | `phase: Deployed`, `Available: True`, `Degraded: False` |
+| CDI | `phase: Deployed`, `Available: True` |
+| NetworkAddonsConfig | `Available: True`, `Degraded: False` |
+| SSP | `Available: True`, `Degraded: False` |
+
+**APIs** — `virtualmachines`, `virtualmachineinstances`, and `datavolumes` are served (catches a healthy-looking operator whose CRDs or aggregated API are missing).
+
+**Nodes** — every node labelled `kubevirt.io/schedulable=true` exposes allocatable `devices.kubevirt.io/kvm`. A node without it can't run VMs even though the operator reports healthy.
+
+**Workload health** — no pods outside `Running`/`Succeeded` in the namespace, no `CrashLoopBackOff` containers, and no VMIs cluster-wide in a bad phase (`Failed`/`Unknown`). Zero VMIs passes.
+
+Read-only — creates nothing, so it's safe to run against a production cluster.
 
 ### Negative / Failure-Mode Tests (`negative-tests.sh`)
 
