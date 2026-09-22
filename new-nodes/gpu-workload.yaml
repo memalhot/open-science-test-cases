@@ -1,0 +1,355 @@
+# Full-node GPU workload for the two new prod nodes.
+#
+#   oc delete -f gpu-node-test.yaml -n mm-test --as system:admin   # free the GPUs first
+#   oc apply -f gpu-workload.yaml -n mm-test --as system:admin
+#   oc logs -f gpu-workload-moc-r4pcc04u12 -n mm-test
+#   oc delete -f gpu-workload.yaml -n mm-test --as system:admin
+#
+# Each pod claims all 4 GPUs on its node, so it only schedules if the whole node
+# is free. It then loads every GPU at once: matmul correctness against a CPU
+# reference, a sustained fp16 matmul on all GPUs concurrently, a device-memory
+# write/verify pass, and NVLink peer-to-peer bandwidth between GPU pairs.
+# Pods run to completion and print `RESULT: PASS` or `RESULT: FAIL`.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-workload
+  labels:
+    app: gpu-workload
+data:
+  gpu-workload.py: |
+    """Loads every GPU allocated to the pod: correctness, sustained fp16
+    throughput, device memory, and peer-to-peer bandwidth."""
+
+    import os
+    import subprocess
+    import sys
+    import threading
+    import time
+
+    EXPECTED_GPUS = int(os.environ.get("EXPECTED_GPUS", "4"))
+    MATRIX_SIZE = int(os.environ.get("MATRIX_SIZE", "8192"))
+    STRESS_SECONDS = float(os.environ.get("STRESS_SECONDS", "60"))
+    MIN_TFLOPS = float(os.environ.get("MIN_TFLOPS", "0"))
+    MEM_FRACTION = float(os.environ.get("MEM_FRACTION", "0.5"))
+
+    FAILED = 0
+
+
+    def ok(key, value):
+        print("  {}: {}".format(key, value), flush=True)
+
+
+    def bad(key, value):
+        global FAILED
+        FAILED += 1
+        # CUDA errors are multi-line; keep the report one line per check.
+        print("  {}: FAIL ({})".format(key, str(value).split("\n")[0][:300]), flush=True)
+
+
+    print("=== Environment ===", flush=True)
+
+    try:
+        smi = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=index,name,driver_version,memory.total,ecc.errors.uncorrected.volatile.total",
+             "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if smi.returncode != 0:
+            bad("nvidia-smi", smi.stderr.strip() or "exit {}".format(smi.returncode))
+        else:
+            for line in smi.stdout.strip().splitlines():
+                fields = [f.strip() for f in line.split(",")]
+                ok("nvidia-smi", " | ".join(fields))
+                # Uncorrected ECC errors mean the board is degraded, not just busy.
+                if len(fields) > 4 and fields[4].isdigit() and int(fields[4]) > 0:
+                    bad("ecc_uncorrected", "GPU {}: {}".format(fields[0], fields[4]))
+    except (OSError, subprocess.SubprocessError) as exc:
+        print("  nvidia-smi: unavailable ({})".format(exc), flush=True)
+
+    try:
+        import torch
+    except ImportError as exc:
+        print("  torch: FAIL (not importable: {})".format(exc), flush=True)
+        print("RESULT: FAIL", flush=True)
+        sys.exit(1)
+
+    ok("torch", torch.__version__)
+    ok("torch_cuda", torch.version.cuda)
+
+    if not torch.cuda.is_available():
+        bad("cuda_available", "torch.cuda.is_available() is False")
+        print("RESULT: FAIL", flush=True)
+        sys.exit(1)
+
+    count = torch.cuda.device_count()
+    if count == EXPECTED_GPUS:
+        ok("gpu_count", count)
+    else:
+        bad("gpu_count", "expected {}, container sees {}".format(EXPECTED_GPUS, count))
+
+    for i in range(count):
+        props = torch.cuda.get_device_properties(i)
+        ok("gpu_{}".format(i), "{} | {} MiB | sm_{}{}".format(
+            props.name, props.total_memory // (1024 * 1024), props.major, props.minor))
+
+    # --- 1. Correctness: every GPU must agree with a CPU reference ---
+
+    print("=== Compute correctness ===", flush=True)
+
+    # Compare true fp32 against the CPU: with TF32 left on, H100 tensor cores
+    # round to a 10-bit mantissa and a healthy GPU still lands ~3e-2 off.
+    torch.backends.cuda.matmul.allow_tf32 = False
+
+    torch.manual_seed(0)
+    a_cpu = torch.randn(512, 512, dtype=torch.float32)
+    b_cpu = torch.randn(512, 512, dtype=torch.float32)
+    ref = a_cpu @ b_cpu
+
+    for i in range(count):
+        try:
+            dev = torch.device("cuda", i)
+            err = ((a_cpu.to(dev) @ b_cpu.to(dev)).cpu() - ref).abs().max().item()
+            if err < 1e-2:
+                ok("matmul_gpu_{}".format(i), "matches CPU (max abs err {:.2e})".format(err))
+            else:
+                bad("matmul_gpu_{}".format(i), "max abs err {:.2e}".format(err))
+        except RuntimeError as exc:
+            bad("matmul_gpu_{}".format(i), exc)
+
+    # --- 2. Sustained fp16 matmul on all GPUs at once ---
+    #  One thread per GPU so the whole node is under load together, not one
+    #  card at a time — that is what shakes out power and thermal limits.
+
+    print("=== Sustained fp16 matmul, all {} GPU(s) for {:.0f}s ===".format(
+        count, STRESS_SECONDS), flush=True)
+
+    results = {}
+    errors = {}
+
+
+    def stress(index):
+        try:
+            dev = torch.device("cuda", index)
+            x = torch.randn(MATRIX_SIZE, MATRIX_SIZE, dtype=torch.float16, device=dev)
+            y = torch.randn(MATRIX_SIZE, MATRIX_SIZE, dtype=torch.float16, device=dev)
+
+            for _ in range(5):  # warm up: first kernels pay context/autotune cost
+                x @ y
+            torch.cuda.synchronize(dev)
+
+            iters = 0
+            begin = time.perf_counter()
+            while time.perf_counter() - begin < STRESS_SECONDS:
+                for _ in range(20):
+                    x @ y
+                torch.cuda.synchronize(dev)
+                iters += 20
+            elapsed = time.perf_counter() - begin
+
+            results[index] = 2.0 * (MATRIX_SIZE ** 3) * iters / elapsed / 1e12
+            del x, y
+            torch.cuda.empty_cache()
+        except RuntimeError as exc:
+            errors[index] = exc
+
+
+    threads = [threading.Thread(target=stress, args=(i,)) for i in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    for i in range(count):
+        if i in errors:
+            bad("tflops_fp16_gpu_{}".format(i), errors[i])
+        elif MIN_TFLOPS > 0 and results[i] < MIN_TFLOPS:
+            bad("tflops_fp16_gpu_{}".format(i),
+                "{:.1f} below MIN_TFLOPS={:.1f}".format(results[i], MIN_TFLOPS))
+        else:
+            ok("tflops_fp16_gpu_{}".format(i), "{:.1f}".format(results[i]))
+
+    if results:
+        ok("tflops_fp16_total", "{:.1f} across {} GPU(s)".format(sum(results.values()), len(results)))
+
+    # --- 3. Memory: allocate, write a pattern, read it back ---
+
+    print("=== Device memory ===", flush=True)
+
+    CHUNK_BYTES = 1024 ** 3  # 1 GiB per allocation: one huge contiguous request
+                             # can OOM on fragmentation even when the total is free
+
+    for i in range(count):
+        chunks = []
+        try:
+            dev = torch.device("cuda", i)
+            free, total = torch.cuda.mem_get_info(dev)
+            target = int(free * MEM_FRACTION)
+            wrong = 0
+            allocated = 0
+
+            while allocated + CHUNK_BYTES <= target:
+                buf = torch.full((CHUNK_BYTES // 4,), 3.5, dtype=torch.float32, device=dev)
+                torch.cuda.synchronize(dev)
+                wrong += int((buf != 3.5).sum().item())
+                chunks.append(buf)
+                allocated += CHUNK_BYTES
+
+            detail = "{:.1f} GiB written and verified in 1 GiB chunks ({:.1f} GiB free of {:.1f} GiB)".format(
+                allocated / (1024 ** 3), free / (1024 ** 3), total / (1024 ** 3))
+            if allocated == 0:
+                bad("memory_gpu_{}".format(i), "only {:.1f} GiB free, nothing to test".format(
+                    free / (1024 ** 3)))
+            elif wrong == 0:
+                ok("memory_gpu_{}".format(i), detail)
+            else:
+                bad("memory_gpu_{}".format(i), "{} elements read back wrong after {}".format(wrong, detail))
+        except RuntimeError as exc:
+            bad("memory_gpu_{}".format(i), exc)
+        finally:
+            del chunks
+            torch.cuda.empty_cache()
+
+    # --- 4. Peer-to-peer bandwidth between GPU pairs (NVLink) ---
+
+    if count >= 2:
+        print("=== GPU-to-GPU copy ===", flush=True)
+        for src_index in range(count):
+            dst_index = (src_index + 1) % count
+            try:
+                src = torch.empty(256 * 1024 * 1024, dtype=torch.float32,
+                                  device=torch.device("cuda", src_index))
+                dst = torch.empty_like(src, device=torch.device("cuda", dst_index))
+                peer = torch.cuda.can_device_access_peer(src_index, dst_index)
+
+                # Sync both endpoints by index: bare synchronize() only waits on
+                # the current device, which times copies as if they were free.
+                def sync_pair():
+                    torch.cuda.synchronize(src_index)
+                    torch.cuda.synchronize(dst_index)
+
+                dst.copy_(src)
+                sync_pair()
+                begin = time.perf_counter()
+                for _ in range(10):
+                    dst.copy_(src)
+                sync_pair()
+                elapsed = time.perf_counter() - begin
+
+                gib = src.numel() * 4 / (1024 ** 3)
+                ok("p2p_{}_to_{}".format(src_index, dst_index),
+                   "{:.1f} GB/s, peer access {}".format(gib * 10 / elapsed, "yes" if peer else "no"))
+                del src, dst
+                torch.cuda.empty_cache()
+            except RuntimeError as exc:
+                bad("p2p_{}_to_{}".format(src_index, dst_index), exc)
+
+    print("RESULT: {}".format("FAIL" if FAILED else "PASS"), flush=True)
+    sys.exit(1 if FAILED else 0)
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-workload-moc-r4pcc04u12
+  labels:
+    app: gpu-workload
+spec:
+  restartPolicy: Never
+  # Pin to the node under test; the blanket toleration clears whatever taints
+  # the GPU nodes carry (here nvidia.com/gpu.product:NoExecute).
+  nodeSelector:
+    kubernetes.io/hostname: moc-r4pcc04u12
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: workload
+      image: image-registry.openshift-image-registry.svc:5000/redhat-ods-applications/jupyter-pytorch-cuda-py312-ubi9:2025.1
+      command: ["python3", "/workload/gpu-workload.py"]
+      env:
+        - name: HOME
+          value: /tmp
+        # The image ships CUDA 12.8 forward-compat libs (libcuda 570) that lose
+        # to the newer host driver (595) with CUDA error 803. Pointing at
+        # /usr/lib64 makes torch load the driver the node actually runs.
+        - name: LD_LIBRARY_PATH
+          value: /usr/lib64
+        - name: EXPECTED_GPUS
+          value: "4"
+        - name: MATRIX_SIZE
+          value: "8192"
+        - name: STRESS_SECONDS
+          value: "60"
+        - name: MIN_TFLOPS
+          value: "0"
+        - name: MEM_FRACTION
+          value: "0.5"
+      resources:
+        limits:
+          # All 4 GPUs: the pod only schedules if the whole node is free.
+          nvidia.com/gpu: "4"
+          cpu: "8"
+          memory: 32Gi
+        requests:
+          nvidia.com/gpu: "4"
+          cpu: "4"
+          memory: 16Gi
+      volumeMounts:
+        - name: workload
+          mountPath: /workload
+  volumes:
+    - name: workload
+      configMap:
+        name: gpu-workload
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-workload-moc-r4pcc04u16
+  labels:
+    app: gpu-workload
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: moc-r4pcc04u16
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: workload
+      image: image-registry.openshift-image-registry.svc:5000/redhat-ods-applications/jupyter-pytorch-cuda-py312-ubi9:2025.1
+      command: ["python3", "/workload/gpu-workload.py"]
+      env:
+        - name: HOME
+          value: /tmp
+        # The image ships CUDA 12.8 forward-compat libs (libcuda 570) that lose
+        # to the newer host driver (595) with CUDA error 803. Pointing at
+        # /usr/lib64 makes torch load the driver the node actually runs.
+        - name: LD_LIBRARY_PATH
+          value: /usr/lib64
+        - name: EXPECTED_GPUS
+          value: "4"
+        - name: MATRIX_SIZE
+          value: "8192"
+        - name: STRESS_SECONDS
+          value: "60"
+        - name: MIN_TFLOPS
+          value: "0"
+        - name: MEM_FRACTION
+          value: "0.5"
+      resources:
+        limits:
+          nvidia.com/gpu: "4"
+          cpu: "8"
+          memory: 32Gi
+        requests:
+          nvidia.com/gpu: "4"
+          cpu: "4"
+          memory: 16Gi
+      volumeMounts:
+        - name: workload
+          mountPath: /workload
+  volumes:
+    - name: workload
+      configMap:
+        name: gpu-workload

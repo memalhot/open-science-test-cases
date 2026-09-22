@@ -1,0 +1,67 @@
+# GPU pods for the two new prod nodes: moc-r4pcc04u12, moc-r4pcc04u16.
+#
+#   oc apply -f gpu-node-test.yaml -n mm-test --as system:admin
+#   oc get pods -l app=gpu-node-test -n mm-test -o wide
+#   oc exec gpu-node-test-moc-r4pcc04u12 -n mm-test -- nvidia-smi
+#   oc delete -f gpu-node-test.yaml -n mm-test --as system:admin
+#
+# Each pod is pinned to one node and requests 1 GPU, so reaching Running proves
+# the node schedules GPU work: taint tolerated, device plugin allocates, the
+# NVIDIA container hooks fire, and the RHOAI workbench image starts on it.
+# The pods idle — no workload is run. Exec in to inspect the GPU.
+#
+# Image is the RHOAI jupyter-pytorch-cuda-py312-ubi9 imagestream, pulled from
+# the internal registry (every service account holds system:image-puller on
+# redhat-ods-applications via the cluster-image-pullers binding).
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-node-test-moc-r4pcc04u12
+  labels:
+    app: gpu-node-test
+spec:
+  # Pin to the node under test; the blanket toleration clears whatever taints
+  # the GPU nodes carry (here nvidia.com/gpu.product:NoExecute).
+  nodeSelector:
+    kubernetes.io/hostname: moc-r4pcc04u12
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: workbench
+      image: image-registry.openshift-image-registry.svc:5000/redhat-ods-applications/jupyter-pytorch-cuda-py312-ubi9:2025.1
+      command: ["sleep", "infinity"]
+      resources:
+        limits:
+          nvidia.com/gpu: "1"
+          cpu: "2"
+          memory: 8Gi
+        requests:
+          nvidia.com/gpu: "1"
+          cpu: "1"
+          memory: 4Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-node-test-moc-r4pcc04u16
+  labels:
+    app: gpu-node-test
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: moc-r4pcc04u16
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: workbench
+      image: image-registry.openshift-image-registry.svc:5000/redhat-ods-applications/jupyter-pytorch-cuda-py312-ubi9:2025.1
+      command: ["sleep", "infinity"]
+      resources:
+        limits:
+          nvidia.com/gpu: "1"
+          cpu: "2"
+          memory: 8Gi
+        requests:
+          nvidia.com/gpu: "1"
+          cpu: "1"
+          memory: 4Gi
