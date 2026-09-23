@@ -33,13 +33,16 @@ objects:
                 - bash
                 - -c
                 - |
-                  pip install -q huggingface_hub[hf_transfer]
-                  export HF_HUB_ENABLE_HF_TRANSFER=1
-                  huggingface-cli download ${MODEL_REPO} \
-                    --local-dir /mnt/models/${MODEL_DIR} \
-                    --token ${ACCESS_TOKEN}
+                  set -euo pipefail
+                  pip install -q "huggingface_hub[hf_xet]"
+                  export HF_XET_HIGH_PERFORMANCE=1
+                  hf download ${MODEL_REPO} \
+                    --local-dir /mnt/models/${MODEL_DIR}
                   echo "Model download complete"
                   ls -lh /mnt/models/${MODEL_DIR}/
+              env:
+                - name: HF_TOKEN
+                  value: ${ACCESS_TOKEN}
               resources:
                 requests:
                   cpu: "2"
