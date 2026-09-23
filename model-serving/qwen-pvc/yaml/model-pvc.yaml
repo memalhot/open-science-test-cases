@@ -10,11 +10,11 @@ parameters:
     description: Size of the PVC
     value: 20Gi
   - name: STORAGE_CLASS
-    description: StorageClass to use (block or file)
-    required: true
+    description: StorageClass to use (cluster default is pure-fb-nfsv4, Pure FlashBlade over NFS)
+    value: pure-fb-nfsv4
   - name: ACCESS_MODE
-    description: Access mode (ReadWriteOnce for block, ReadWriteMany for file)
-    value: ReadWriteOnce
+    description: Access mode (ReadWriteMany for file storage such as pure-fb-nfsv4, ReadWriteOnce for block)
+    value: ReadWriteMany
 objects:
   - apiVersion: v1
     kind: PersistentVolumeClaim

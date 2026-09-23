@@ -4,9 +4,9 @@ set -euo pipefail
 PROJECT=${PROJECT:-mm-test}
 MODEL_NAME=${MODEL_NAME:-qwen-model}
 PVC_NAME=${PVC_NAME:-qwen-model-pvc}
-STORAGE_CLASS=${STORAGE_CLASS:?'STORAGE_CLASS is required (e.g. ocs-storagecluster-ceph-rbd for block, ocs-storagecluster-cephfs for file)'}
+STORAGE_CLASS=${STORAGE_CLASS:-pure-fb-nfsv4}
 STORAGE_SIZE=${STORAGE_SIZE:-20Gi}
-ACCESS_MODE=${ACCESS_MODE:-ReadWriteOnce}
+ACCESS_MODE=${ACCESS_MODE:-ReadWriteMany}
 MODEL_REPO=${MODEL_REPO:-Qwen/Qwen2.5-3B-Instruct}
 MODEL_DIR=${MODEL_DIR:-Qwen2.5-3B-Instruct}
 
