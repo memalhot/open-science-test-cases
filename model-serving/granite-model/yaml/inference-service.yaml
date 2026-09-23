@@ -45,7 +45,10 @@ objects:
           storage:
             key: minio-data-connection
             path: ${MODEL_PATH}
+        # NFD taints GPU nodes NoExecute on nvidia.com/gpu.product=<PRODUCT>.
+        # Tolerate the key regardless of value so the pod can land on any GPU
+        # node; GPU selection is via the resource request above.
         tolerations:
-          - effect: NoSchedule
-            key: nvidia.com/gpu
+          - key: nvidia.com/gpu.product
             operator: Exists
+            effect: NoExecute

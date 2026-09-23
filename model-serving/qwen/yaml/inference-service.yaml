@@ -29,10 +29,13 @@ objects:
       predictor:
         maxReplicas: 1
         minReplicas: 1
+        # NFD taints GPU nodes NoExecute on nvidia.com/gpu.product=<PRODUCT>.
+        # Tolerate the key regardless of value so the pod can land on any GPU
+        # node; GPU selection is via the resource request.
         tolerations:
           - key: nvidia.com/gpu.product
             operator: Exists
-            effect: NoSchedule
+            effect: NoExecute
         model:
           modelFormat:
             name: vLLM

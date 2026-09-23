@@ -24,9 +24,9 @@ spec:
       runtime: gemma4-vllm-runtime
       # <path> must match where the seed Job writes the weights.
       storageUri: pvc://model-cache/gemma-4-31b
-    # NFD taints GPU nodes with nvidia.com/gpu.product=<PRODUCT>:NoSchedule;
+    # NFD taints GPU nodes NoExecute on nvidia.com/gpu.product=<PRODUCT>;
     # tolerate the key regardless of value (GPU selection is via the request).
     tolerations:
       - key: nvidia.com/gpu.product
         operator: Exists
-        effect: NoSchedule
+        effect: NoExecute

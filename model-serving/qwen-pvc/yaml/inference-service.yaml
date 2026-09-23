@@ -46,7 +46,10 @@ objects:
               nvidia.com/gpu: "1"
           runtime: ${SERVING_RUNTIME}
           storageUri: pvc://${PVC_NAME}/${MODEL_DIR}
+        # NFD taints GPU nodes NoExecute on nvidia.com/gpu.product=<PRODUCT>.
+        # Tolerate the key regardless of value so the pod can land on any GPU
+        # node; GPU selection is via the nvidia.com/gpu resource request above.
         tolerations:
-          - effect: NoSchedule
-            key: nvidia.com/gpu
+          - key: nvidia.com/gpu.product
             operator: Exists
+            effect: NoExecute
