@@ -20,6 +20,14 @@ objects:
     kind: PersistentVolumeClaim
     metadata:
       name: ${PVC_NAME}
+      # The dashboard lists PVCs with labelSelector opendatahub.io/dashboard=true.
+      # Without this label the PVC is invisible in the UI, and the "Existing
+      # cluster storage" model-source option is hidden entirely (it only renders
+      # when that filtered list is non-empty).
+      labels:
+        opendatahub.io/dashboard: "true"
+      annotations:
+        openshift.io/display-name: ${PVC_NAME}
     spec:
       accessModes:
         - ${ACCESS_MODE}
