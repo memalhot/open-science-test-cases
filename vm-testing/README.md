@@ -1,13 +1,14 @@
 # VM Testing
 
-Two test suites for OpenShift Virtualization:
+Three test suites for OpenShift Virtualization:
 
 - **Networking** (`test-vm.sh`, `net-test-vm.yaml`) — a CirrOS VM on an ephemeral `containerDisk`, checking egress and inbound reachability.
 - **Persistent storage** (`test-vm-storage.sh`) — a Fedora VM on a CDI-provisioned PVC, checking that guest data survives a stop/start.
+- **Live migration** (`test-vm-migration.sh`) — the same VM moved between nodes while running, checking that the guest never reboots.
 
 ## Prerequisites
 
-Both require `oc` and `virtctl`, authenticated to the target cluster, with OpenShift Virtualization installed (see `component-checks/oc-virt-checks.sh`). `virtctl` is not bundled with `oc`; get its download URL with:
+All three require `oc` and `virtctl`, authenticated to the target cluster, with OpenShift Virtualization installed (see `component-checks/oc-virt-checks.sh`). `virtctl` is not bundled with `oc`; get its download URL with:
 
 ```bash
 oc get consoleclidownload virtctl-clidownloads-kubevirt-hyperconverged -o jsonpath='{.spec.links[*].href}'
@@ -126,3 +127,68 @@ This affects more than this test. Cloning a golden image is the path the console
 
 The `DV_STALL` detector exists because of this: it fails the test in about four minutes with the CDI worker pod logs attached, rather than spinning for the full `DV_TIMEOUT`.
 
+---
+
+# VM Live Migration Testing
+
+Live migration is what makes node maintenance survivable for VM users. Drains, cluster upgrades and MachineConfig rollouts all evict VMs; without it, each of those hard-kills the guest and loses whatever was in RAM. `test-vm-migration.sh` boots a VM on an RWX PVC, starts a heartbeat inside the guest, migrates it to another node, and checks that the same kernel came out the other side.
+
+```bash
+cd vm-testing
+./test-vm-migration.sh
+```
+
+Takes roughly 3-4 minutes end to end and deletes everything it created on exit.
+
+## What it asserts
+
+| # | Check | Why it matters |
+|---|-------|----------------|
+| 1 | DataVolume reaches `Succeeded` | Setup — the disk must exist before anything can move |
+| 2 | Root disk is `ReadWriteMany` | A shared disk is the precondition; an RWO disk pins the VM to one node |
+| 3 | VM boots and reaches `Ready` | — |
+| 4 | Guest answers `virtctl ssh` before migrating | Establishes a working baseline to compare against |
+| 5 | In-guest heartbeat starts | Setup for the downtime measurement |
+| 6 | VMI reports `LiveMigratable=True` | KubeVirt's own up-front verdict. If false, its `reason` names the blocker and the test stops there rather than failing obscurely later |
+| 7 | Migration reaches `Succeeded` | The `VirtualMachineInstanceMigration` finished, `migrationState.failed` is not set |
+| 8 | VM is on a different node | It actually moved |
+| 9 | VMI UID is unchanged | The object was not deleted and recreated |
+| 10 | Guest answers SSH after migrating | It is still usable |
+| 11 | **Guest `boot_id` is unchanged** | **The decisive check** — see below |
+| 12 | Marker file still readable | The disk followed the VM to the new node |
+| 13 | Longest heartbeat gap is under `DOWNTIME_BUDGET` | The pause was short enough to call this *live* migration |
+
+### Why `boot_id`
+
+A VM that crashes and reboots onto another node also ends up "running, on a different node, reachable over SSH" — it would pass a naive node-name check while having lost everything in RAM, which is the exact failure live migration is supposed to prevent. The kernel regenerates `/proc/sys/kernel/random/boot_id` on every boot and holds it stable for the life of a running kernel, so carrying the same value across the migration is what actually proves the guest never stopped.
+
+### How downtime is measured
+
+The guest appends `date +%s.%N` to a file every 50ms. When it is paused for the final switchover it stops executing, so the largest gap between consecutive samples is the outage as the guest itself experienced it — no network in the path. The measurement cannot resolve a pause much shorter than the heartbeat interval plus scheduler jitter.
+
+Note that total migration time and downtime are different numbers. Memory is copied while the guest keeps running; only the final switchover pauses it. The script reports both.
+
+## Configuration
+
+Shares the disk and image variables with `test-vm-storage.sh` (`SOURCE_MODE`, `IMAGE_URL`, `DISK_SIZE`, `STORAGE_CLASS`, `ACCESS_MODE`, `GUEST_USER`, `DV_STALL`, `KEEP_VM`), plus:
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `VM_NAME` | `migrate-test-vm` | — |
+| `MIGRATION_TIMEOUT` | `600` | seconds to wait for the migration to finish |
+| `DOWNTIME_BUDGET` | `5` | seconds the guest may stop executing and still pass |
+| `HEARTBEAT_INTERVAL` | `0.05` | guest sampling interval, and the floor on measurement resolution |
+| `MEMORY` | `2Gi` | migration transfer time scales with this |
+
+## Result: 13 passed, 0 failed
+
+Run against `mm-test` on `oac-dev-workload0`:
+
+- migrated `moc-r4pac22u27-s1` → `moc-r4pac22u29-s3`, mode `PreCopy`
+- total migration 2 seconds for a 2Gi guest
+- **guest-visible downtime 0.189s** across 276 heartbeat samples
+- `boot_id` unchanged, VMI UID unchanged, marker file intact
+
+## Possible extension
+
+The current downtime number is what the guest experienced. It does not measure *network* continuity, which is a separate question: with masquerade binding the virt-launcher pod IP changes on migration, so measuring that properly needs a Service in front of the VM and an external prober, and the result would fold in OVN-Kubernetes endpoint reprogramming time as well as the migration itself. Worth adding if inbound connection survival is something you need to claim.
