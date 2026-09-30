@@ -14,7 +14,43 @@ All three require `oc` and `virtctl`, authenticated to the target cluster, with 
 oc get consoleclidownload virtctl-clidownloads-kubevirt-hyperconverged -o jsonpath='{.spec.links[*].href}'
 ```
 
-The scripts run entirely as the logged-in user — no `--as system:admin` anywhere — so what they prove is what a real project user can actually do.
+The scripts run entirely as the logged-in user — no `--as system:admin` anywhere — so what they prove is what a real project user can actually do. Creating VMs, DataVolumes and PVCs works with ordinary namespace edit rights, but **migration does not**, and needs a one-time RBAC grant.
+
+### One-time: migration RBAC
+
+KubeVirt ships no role that delegates migration. Neither `kubevirt.io:edit` nor `kubevirt.io:admin` includes the `virtualmachines/migrate` subresource or `create` on `VirtualMachineInstanceMigration` — both only get `get`/`list`/`watch` — so it is cluster-admin-only until granted explicitly. Without it `virtctl migrate` fails with:
+
+```
+virtualmachines.subresources.kubevirt.io "my-vm" is forbidden: User "you@example.com"
+cannot update resource "virtualmachines/migrate" in API group "subresources.kubevirt.io"
+```
+
+`migrate-rbac.yaml` creates a namespaced Role and RoleBinding granting exactly the two permissions needed. A cluster admin applies it once per namespace:
+
+```bash
+oc process --local -f migrate-rbac.yaml \
+  -p NAMESPACE=mm-test \
+  -p USER_NAME=$(oc whoami) \
+  | oc apply --as system:admin -f -
+```
+
+`--local` matters: without it `oc process` tries to create a `processedtemplates` object in `default` and is denied.
+
+| Rule | Grants |
+|------|--------|
+| `subresources.kubevirt.io` → `virtualmachines/migrate` : `update` | what `virtctl migrate` calls |
+| `kubevirt.io` → `virtualmachineinstancemigrations` : `get,list,watch,create,delete` | the object-based path used by `test-vm-migration.sh`; `delete` also covers `virtctl migrate-cancel` |
+
+Verify, then remove when no longer wanted:
+
+```bash
+oc auth can-i update virtualmachines/migrate -n mm-test          # yes
+oc auth can-i create virtualmachineinstancemigrations -n mm-test # yes
+
+oc delete role,rolebinding vm-live-migrator -n mm-test --as system:admin
+```
+
+Applied on `oac-dev-workload0` for `memalhot@redhat.com` in `mm-test`. Confirmed scoped — the same check in another namespace returns `no`.
 
 ---
 
@@ -188,6 +224,10 @@ Run against `mm-test` on `oac-dev-workload0`:
 - total migration 2 seconds for a 2Gi guest
 - **guest-visible downtime 0.189s** across 276 heartbeat samples
 - `boot_id` unchanged, VMI UID unchanged, marker file intact
+
+## Why the script does not use `virtctl migrate`
+
+The script creates the `VirtualMachineInstanceMigration` object directly with `oc create`. That triggers the same operation through a plain CRD write, so the migration is visible as a normal Kubernetes object the script can watch, name in its cleanup, and report `migrationState` from. It also keeps the whole test on one credential path — `virtctl` has no `--as` flag, so anything it does cannot be reasoned about separately from the logged-in user. The permission is checked in preflight rather than three minutes later, after a VM has been built; see [migration RBAC](#one-time-migration-rbac) above.
 
 ## Possible extension
 
