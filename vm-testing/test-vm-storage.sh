@@ -56,9 +56,9 @@ WORKDIR=""
 PASSED=0
 FAILED=0
 
-pass() { echo "  ✅ $1"; PASSED=$((PASSED + 1)); }
-fail() { echo "  ❌ $1"; FAILED=$((FAILED + 1)); }
-warn() { echo "  ⚠️  $1"; }
+pass() { echo " passed  $1"; PASSED=$((PASSED + 1)); }
+fail() { echo "  failed $1"; FAILED=$((FAILED + 1)); }
+warn() { echo "  warning  $1"; }
 
 cleanup() {
   echo ""
@@ -105,7 +105,7 @@ echo "=== 0. Preflight ==="
 
 for bin in oc virtctl ssh-keygen; do
   if ! command -v "${bin}" >/dev/null 2>&1; then
-    echo "❌ Required binary '${bin}' not found in PATH."
+    echo "failed Required binary '${bin}' not found in PATH."
     [ "${bin}" = "virtctl" ] && echo "   Download it from the OpenShift console (Command line tools) or:" \
       && echo "   oc get consoleclidownload virtctl-clidownloads-kubevirt-hyperconverged -o jsonpath='{.spec.links[*].href}'"
     exit 1
@@ -113,7 +113,7 @@ for bin in oc virtctl ssh-keygen; do
 done
 
 oc get namespace "${NAMESPACE}" >/dev/null 2>&1 || {
-  echo "❌ Namespace ${NAMESPACE} not found."
+  echo "failed Namespace ${NAMESPACE} not found."
   exit 1
 }
 echo "namespace ${NAMESPACE}: present"
@@ -122,14 +122,14 @@ if [ "${SOURCE_MODE}" = "datasource" ]; then
   DS_READY="$(oc get datasource "${DATA_SOURCE}" -n "${DATA_SOURCE_NS}" \
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")"
   if [ "${DS_READY}" != "True" ]; then
-    echo "❌ DataSource ${DATA_SOURCE_NS}/${DATA_SOURCE} is not Ready (got '${DS_READY:-not found}')."
+    echo "failed DataSource ${DATA_SOURCE_NS}/${DATA_SOURCE} is not Ready (got '${DS_READY:-not found}')."
     echo "   Available boot sources:"
     oc get datasource -n "${DATA_SOURCE_NS}" 2>/dev/null | sed 's/^/     /' || true
     exit 1
   fi
   echo "datasource ${DATA_SOURCE}: Ready"
 elif [ "${SOURCE_MODE}" != "registry" ]; then
-  echo "❌ SOURCE_MODE must be 'registry' or 'datasource' (got '${SOURCE_MODE}')."
+  echo "failed SOURCE_MODE must be 'registry' or 'datasource' (got '${SOURCE_MODE}')."
   exit 1
 fi
 
@@ -138,7 +138,7 @@ fi
 for kind in vm dv; do
   if oc get "${kind}" "${VM_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1 \
      || oc get "${kind}" "${DV_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1; then
-    echo "❌ Leftover ${kind} from a previous run exists in ${NAMESPACE}. Remove it first:"
+    echo "failed Leftover ${kind} from a previous run exists in ${NAMESPACE}. Remove it first:"
     echo "   oc delete vm ${VM_NAME} dv ${DV_NAME} -n ${NAMESPACE} --ignore-not-found"
     exit 1
   fi
@@ -291,7 +291,7 @@ EOF
 UD_BYTES=$(wc -c < "${WORKDIR}/user-data" | tr -d ' ')
 echo "cloud-init userdata: ${UD_BYTES} bytes (KubeVirt inline cap is 2048)"
 if [ "${UD_BYTES}" -gt 2048 ]; then
-  echo "❌ Error: userdata exceeds the inline limit."
+  echo "failed Error: userdata exceeds the inline limit."
   exit 1
 fi
 
@@ -512,7 +512,7 @@ AGENT="$(oc get vmi "${VM_NAME}" -n "${NAMESPACE}" \
   -o jsonpath='{.status.conditions[?(@.type=="AgentConnected")].status}' 2>/dev/null || echo "")"
 if [ "${AGENT}" = "True" ]; then
   GUEST_OS="$(oc get vmi "${VM_NAME}" -n "${NAMESPACE}" -o jsonpath='{.status.guestOSInfo.prettyName}' 2>/dev/null || echo "")"
-  echo "  ✅ qemu-guest-agent connected${GUEST_OS:+ (${GUEST_OS})}"
+  echo "    qemu-guest-agent connected${GUEST_OS:+ (${GUEST_OS})}"
 else
   warn "qemu-guest-agent not connected — virtctl guestosinfo and graceful shutdown hooks will not work"
 fi
@@ -520,7 +520,7 @@ fi
 # The prerequisite the live-migration test will build on. RWX is what makes the
 # disk movable between nodes; RWO would pin this VM to one host.
 if printf '%s' "${PVC_MODES}" | grep -qw ReadWriteMany; then
-  echo "  ✅ Root disk is ReadWriteMany — live migration is possible on this storage"
+  echo "    Root disk is ReadWriteMany — live migration is possible on this storage"
 else
   warn "Root disk access mode is '${PVC_MODES}', not ReadWriteMany — this VM cannot live migrate"
 fi
@@ -528,7 +528,7 @@ fi
 MIGRATABLE="$(oc get vmi "${VM_NAME}" -n "${NAMESPACE}" \
   -o jsonpath='{.status.conditions[?(@.type=="LiveMigratable")].status}' 2>/dev/null || echo "")"
 if [ "${MIGRATABLE}" = "True" ]; then
-  echo "  ✅ VMI reports LiveMigratable=True"
+  echo "    VMI reports LiveMigratable=True"
 else
   MIG_REASON="$(oc get vmi "${VM_NAME}" -n "${NAMESPACE}" \
     -o jsonpath='{.status.conditions[?(@.type=="LiveMigratable")].reason}{" "}{.status.conditions[?(@.type=="LiveMigratable")].message}' 2>/dev/null || echo "")"
@@ -541,10 +541,10 @@ echo "  Results: ${PASSED} passed, ${FAILED} failed"
 echo "========================================="
 
 if [ "${FAILED}" -eq 0 ]; then
-  echo "✅ VERIFICATION SUCCESS: VMs get real persistent storage — a CDI-provisioned"
+  echo "  VERIFICATION SUCCESS: VMs get real persistent storage — a CDI-provisioned"
   echo "   PVC root disk survives a full VM stop/start with its data intact."
 else
-  echo "❌ VERIFICATION FAILED: see the ❌ lines above."
+  echo "failed VERIFICATION FAILED: see the failed lines above."
   echo ""
   echo "VMI status:"
   oc get vmi "${VM_NAME}" -n "${NAMESPACE}" -o wide 2>/dev/null || true

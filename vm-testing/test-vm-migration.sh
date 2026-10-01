@@ -59,9 +59,9 @@ WORKDIR=""
 PASSED=0
 FAILED=0
 
-pass() { echo "  ✅ $1"; PASSED=$((PASSED + 1)); }
-fail() { echo "  ❌ $1"; FAILED=$((FAILED + 1)); }
-warn() { echo "  ⚠️  $1"; }
+pass() { echo "    $1"; PASSED=$((PASSED + 1)); }
+fail() { echo "  failed $1"; FAILED=$((FAILED + 1)); }
+warn() { echo "  warning  $1"; }
 
 cleanup() {
   echo ""
@@ -103,7 +103,7 @@ echo "=== 0. Preflight ==="
 
 for bin in oc virtctl ssh-keygen awk; do
   if ! command -v "${bin}" >/dev/null 2>&1; then
-    echo "❌ Required binary '${bin}' not found in PATH."
+    echo "failed Required binary '${bin}' not found in PATH."
     if [ "${bin}" = "virtctl" ]; then
       echo "   Get the download URL with:"
       echo "   oc get consoleclidownload virtctl-clidownloads-kubevirt-hyperconverged -o jsonpath='{.spec.links[*].href}'"
@@ -113,7 +113,7 @@ for bin in oc virtctl ssh-keygen awk; do
 done
 
 oc get namespace "${NAMESPACE}" >/dev/null 2>&1 || {
-  echo "❌ Namespace ${NAMESPACE} not found."
+  echo "failed Namespace ${NAMESPACE} not found."
   exit 1
 }
 echo "namespace ${NAMESPACE}: present"
@@ -123,7 +123,7 @@ echo "namespace ${NAMESPACE}: present"
 VIRT_NODES="$(oc get nodes -l kubevirt.io/schedulable=true -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")"
 NODE_COUNT=$(wc -w <<< "${VIRT_NODES}")
 if [ "${NODE_COUNT}" -lt 2 ]; then
-  echo "❌ Live migration needs at least 2 virtualization-schedulable nodes, found ${NODE_COUNT}."
+  echo "failed Live migration needs at least 2 virtualization-schedulable nodes, found ${NODE_COUNT}."
   echo "   Nodes: ${VIRT_NODES:-none}"
   exit 1
 fi
@@ -132,7 +132,7 @@ echo "virtualization-schedulable nodes: ${NODE_COUNT}"
 # Checked up front because the VM takes a couple of minutes to build, and
 # finding out afterwards that the migration itself is forbidden wastes all of it.
 if ! oc auth can-i create virtualmachineinstancemigrations -n "${NAMESPACE}" >/dev/null 2>&1; then
-  echo "❌ Not allowed to create VirtualMachineInstanceMigration in ${NAMESPACE}."
+  echo "failed Not allowed to create VirtualMachineInstanceMigration in ${NAMESPACE}."
   echo "   KubeVirt does not grant migration to project users by default. Have a"
   echo "   cluster admin apply the Role and RoleBinding once:"
   echo "     oc process --local -f migrate-rbac.yaml -p NAMESPACE=${NAMESPACE} -p USER_NAME=\$(oc whoami) \\"
@@ -145,19 +145,19 @@ if [ "${SOURCE_MODE}" = "datasource" ]; then
   DS_READY="$(oc get datasource "${DATA_SOURCE}" -n "${DATA_SOURCE_NS}" \
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")"
   if [ "${DS_READY}" != "True" ]; then
-    echo "❌ DataSource ${DATA_SOURCE_NS}/${DATA_SOURCE} is not Ready (got '${DS_READY:-not found}')."
+    echo "failed DataSource ${DATA_SOURCE_NS}/${DATA_SOURCE} is not Ready (got '${DS_READY:-not found}')."
     exit 1
   fi
   echo "datasource ${DATA_SOURCE}: Ready"
 elif [ "${SOURCE_MODE}" != "registry" ]; then
-  echo "❌ SOURCE_MODE must be 'registry' or 'datasource' (got '${SOURCE_MODE}')."
+  echo "failed SOURCE_MODE must be 'registry' or 'datasource' (got '${SOURCE_MODE}')."
   exit 1
 fi
 
 for kind in vm dv; do
   if oc get "${kind}" "${VM_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1 \
      || oc get "${kind}" "${DV_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1; then
-    echo "❌ Leftover ${kind} from a previous run exists in ${NAMESPACE}. Remove it first:"
+    echo "failed Leftover ${kind} from a previous run exists in ${NAMESPACE}. Remove it first:"
     echo "   oc delete vm ${VM_NAME} dv ${DV_NAME} -n ${NAMESPACE} --ignore-not-found"
     exit 1
   fi
@@ -548,10 +548,10 @@ echo "  Results: ${PASSED} passed, ${FAILED} failed"
 echo "========================================="
 
 if [ "${FAILED}" -eq 0 ]; then
-  echo "✅ VERIFICATION SUCCESS: a running VM live migrated between nodes without"
+  echo "  VERIFICATION SUCCESS: a running VM live migrated between nodes without"
   echo "   rebooting the guest — node drains and cluster upgrades are survivable."
 else
-  echo "❌ VERIFICATION FAILED: see the ❌ lines above."
+  echo "failed VERIFICATION FAILED: see the failed lines above."
   echo ""
   echo "VMI status:"
   oc get vmi "${VM_NAME}" -n "${NAMESPACE}" -o wide 2>/dev/null || true
