@@ -1,0 +1,55 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: vm-ipam-rbac
+  annotations:
+    description: >-
+      Grants a user permission to create secondary networks
+      (NetworkAttachmentDefinitions) in one namespace. No shipped OpenShift role
+      allows this: clusterrole/edit has no rule for the resource at all, and
+      clusterrole/admin grants only get/list/watch, so even a project admin can
+      read secondary networks without being able to define one. That makes
+      secondary networking cluster-admin-only by default and it has to be
+      delegated explicitly, exactly as live migration does.
+
+      This grant does NOT cover reading whereabouts IPPools, which record who
+      currently holds each address. Those are cluster-scoped and are deliberately
+      left out — test-vm-secondary-ipam.sh reads them with an explicit
+      `--as system:admin` on a non-mutating get, and reports the fact that an
+      ordinary user cannot, because that is one of the findings.
+parameters:
+  - name: NAMESPACE
+    description: Namespace the permission applies to
+    value: mm-test
+  - name: USER_NAME
+    description: User to grant secondary-network rights to (as shown by `oc whoami`)
+    required: true
+  - name: ROLE_NAME
+    description: Name of the Role and RoleBinding created
+    value: vm-secondary-net-admin
+objects:
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: ${ROLE_NAME}
+      namespace: ${NAMESPACE}
+    rules:
+      # create is what is actually missing; get/list/watch are already granted by
+      # clusterrole/admin but are repeated here so the Role stands alone for a
+      # user who only holds edit. delete lets the test clean up after itself.
+      - apiGroups: ["k8s.cni.cncf.io"]
+        resources: ["network-attachment-definitions"]
+        verbs: ["get", "list", "watch", "create", "delete"]
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: ${ROLE_NAME}
+      namespace: ${NAMESPACE}
+    subjects:
+      - kind: User
+        apiGroup: rbac.authorization.k8s.io
+        name: ${USER_NAME}
+    roleRef:
+      kind: Role
+      apiGroup: rbac.authorization.k8s.io
+      name: ${ROLE_NAME}
