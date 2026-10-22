@@ -1,0 +1,45 @@
+# External endpoint for the vLLM API server.
+#
+# KubeRay does create its own `beam-head-svc`, but it only publishes ports
+# declared on the Ray container (index 0) — our API server lives in the `vllm`
+# sidecar, so port 8000 is not in it. Hence an explicit Service of our own,
+# selecting the head pod by the labels KubeRay stamps on it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: beam-external
+  labels:
+    app: beam
+spec:
+  selector:
+    ray.io/cluster: beam
+    ray.io/node-type: head
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+---
+# Edge-terminated: TLS stops at the router and the hop to vLLM is plain HTTP
+# inside the cluster. Matches the other model endpoints in this repo, which the
+# test suites reach with `curl -k` and no token.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: beam-infer
+  labels:
+    app: beam
+  annotations:
+    # Beam is a reasoning model: a single high-effort completion can run for
+    # many minutes before the first token of the `final` channel appears. The
+    # router's 30s default would cut those requests off mid-stream.
+    haproxy.router.openshift.io/timeout: "30m"
+spec:
+  to:
+    kind: Service
+    name: beam-external
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

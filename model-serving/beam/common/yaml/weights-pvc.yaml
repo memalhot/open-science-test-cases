@@ -1,0 +1,23 @@
+# Shared weight store for Beam 1.0.
+#
+# ReadWriteMany is not optional here: the tensor-parallel group spans two nodes,
+# so the Ray head pod and the Ray worker pod — scheduled on different machines —
+# must both mount these weights at the same time. The default pure-fb-nfsv4
+# (FlashBlade NFS) class provides RWX; a block class would not.
+#
+# Mounted read-WRITE rather than read-only because vLLM's torch.compile cache
+# (VLLM_CACHE_ROOT) and the HuggingFace Xet chunk cache (HF_HOME) also live here,
+# under dot-prefixed subdirectories alongside the model.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: beam-weights
+  labels:
+    app: beam
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: __STORAGE_CLASS__
+  resources:
+    requests:
+      storage: __STORAGE_SIZE__

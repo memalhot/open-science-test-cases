@@ -1,0 +1,300 @@
+# Beam 1.0 served by vLLM with the tensor-parallel group spread across two
+# nodes by Ray — RHOAI 2.25 variant.
+#
+# The topology is identical to ../../rhoai3/yaml/raycluster.yaml (see that file
+# and the READMEs for why Ray is needed at all). What differs is everything the
+# CodeFlare operator does to a RayCluster on 2.x, which it does NOT do on 3.x:
+#
+#   1. A mutating webhook injects mTLS into the Ray pods — but only into
+#      container index 0. Our vLLM driver is a sidecar at index 1, so it gets
+#      neither the RAY_TLS_* env nor the cert mounts, and cannot talk to a
+#      TLS-enabled GCS. We therefore add both by hand below. This is the single
+#      most important difference between the two variants.
+#   2. The same webhook appends an `oauth-proxy` container (port 8443) to the
+#      head and overwrites spec.headGroupSpec.template.spec.serviceAccountName
+#      with "<cluster>-oauth-proxy". We deliberately do not set a service
+#      account here — the webhook would overwrite it and the validating webhook
+#      would then reject the object.
+#   3. The CodeFlare controller installs NetworkPolicies on the head and worker
+#      pods. The head policy does not permit port 8000 from anywhere, so the
+#      router cannot reach vLLM — see networkpolicy.yaml, which reopens it.
+#   4. Admission may be gated by Kueue; set LOCAL_QUEUE in config.conf if your
+#      cluster has no default LocalQueue.
+#
+# All of the above is default-on behaviour (mTLSEnabled / rayDashboardOAuthEnabled
+# both default to true in the codeflare-operator-config ConfigMap). If your
+# cluster admin has turned either off, the extra env/mounts here are harmless:
+# Ray ignores RAY_TLS_* when RAY_USE_TLS is unset, and the mounts just resolve
+# to volumes the webhook still creates.
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata:
+  name: beam
+  labels:
+    app: beam
+    # Kueue admission. Rendered empty when LOCAL_QUEUE is unset, which is
+    # correct when the admin has configured a default LocalQueue.
+    kueue.x-k8s.io/queue-name: "__LOCAL_QUEUE__"
+spec:
+  rayVersion: "__RAY_VERSION__"
+
+  # ---------------------------------------------------------------------------
+  # Head: Ray GCS + 4 TP ranks + the vLLM driver/API server
+  # (+ an oauth-proxy container the webhook appends)
+  # ---------------------------------------------------------------------------
+  headGroupSpec:
+    rayStartParams:
+      num-gpus: "__HEAD_GPUS__"
+      dashboard-host: "0.0.0.0"
+    template:
+      metadata:
+        labels:
+          app: beam
+      spec:
+        tolerations:
+          - key: nvidia.com/gpu.product
+            operator: Exists
+            effect: NoSchedule
+        containers:
+          # MUST stay at index 0: both KubeRay (which injects `ray start`) and
+          # the CodeFlare webhook (which injects the mTLS env and cert mounts)
+          # address this container positionally.
+          - name: ray-head
+            image: __IMAGE__
+            env:
+              - name: HOME
+                value: "/home/ray"
+              - name: VLLM_CACHE_ROOT
+                value: "/models/.vllm-cache"
+              - name: HF_HOME
+                value: "/models/.hf-home"
+              - name: NCCL_IB_DISABLE
+                value: "__NCCL_IB_DISABLE__"
+              - name: NCCL_SOCKET_IFNAME
+                value: "__NCCL_SOCKET_IFNAME__"
+              - name: GLOO_SOCKET_IFNAME
+                value: "__NCCL_SOCKET_IFNAME__"
+              - name: NCCL_DEBUG
+                value: "WARN"
+              # RAY_USE_TLS / RAY_TLS_* and the ca-vol + server-cert mounts are
+              # injected here by the CodeFlare webhook. Not repeated by hand:
+              # its validating webhook treats them as immutable and rejects a
+              # spec that already carries conflicting values.
+            ports:
+              - { containerPort: 6379,  name: gcs }
+              - { containerPort: 8265,  name: dashboard }
+              - { containerPort: 10001, name: client }
+            resources:
+              requests:
+                cpu: "16"
+                memory: 128Gi
+              limits:
+                nvidia.com/gpu: "__HEAD_GPUS__"
+                memory: 256Gi
+            volumeMounts:
+              - { name: weights, mountPath: /models }
+              - { name: ray-home, mountPath: /home/ray }
+              - { name: shm, mountPath: /dev/shm }
+
+          - name: vllm
+            image: __IMAGE__
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                set -eu
+
+                # Under CodeFlare mTLS the GCS speaks TLS, and the per-pod
+                # server cert is produced by the injected `create-cert` init
+                # container into the shared server-cert emptyDir. That init
+                # container gates the whole pod, so by the time this runs the
+                # files exist — but check rather than fail later inside Ray
+                # with an opaque handshake error.
+                if [ "${RAY_USE_TLS:-0}" = "1" ]; then
+                  echo "mTLS enabled; verifying injected certificates"
+                  for f in "$RAY_TLS_SERVER_CERT" "$RAY_TLS_SERVER_KEY" "$RAY_TLS_CA_CERT"; do
+                    [ -r "$f" ] || { echo "FATAL: cannot read $f (CodeFlare create-cert init container did not run?)" >&2; exit 1; }
+                  done
+                  echo "  certificates present"
+                fi
+
+                echo "Waiting for Ray to register __TP_SIZE__ GPUs..."
+                python3 - <<'PYWAIT'
+                import os, sys, time
+                import ray
+
+                want = int(os.environ["TP_SIZE"])
+                ray.init(address=os.environ["RAY_ADDRESS"], log_to_driver=False)
+                deadline = time.time() + 1800
+                have = 0
+                while time.time() < deadline:
+                    have = int(ray.cluster_resources().get("GPU", 0))
+                    if have >= want:
+                        print(f"Ray cluster has {have} GPUs; proceeding.", flush=True)
+                        sys.exit(0)
+                    print(f"  {have}/{want} GPUs registered...", flush=True)
+                    time.sleep(10)
+                print(f"FATAL: only {have}/{want} GPUs after 30m", file=sys.stderr)
+                sys.exit(1)
+                PYWAIT
+
+                EXTRA=""
+                if [ -n "__MOE_BACKEND__" ]; then
+                  EXTRA="${EXTRA} --moe-backend=__MOE_BACKEND__"
+                fi
+                if [ -n "__KV_CACHE_DTYPE__" ] && [ "__KV_CACHE_DTYPE__" != "auto" ]; then
+                  EXTRA="${EXTRA} --kv-cache-dtype=__KV_CACHE_DTYPE__"
+                fi
+
+                echo "Starting vLLM (TP=__TP_SIZE__ over Ray)"
+                # shellcheck disable=SC2086
+                exec python3 -m vllm.entrypoints.openai.api_server \
+                  --model=__MODEL_PATH__ \
+                  --served-model-name=__SERVED_NAME__ \
+                  --tensor-parallel-size=__TP_SIZE__ \
+                  --distributed-executor-backend=ray \
+                  --max-model-len=__MAX_MODEL_LEN__ \
+                  --gpu-memory-utilization=__GPU_MEM_UTIL__ \
+                  --enable-auto-tool-choice \
+                  --tool-call-parser=beam \
+                  --reasoning-parser=beam \
+                  --host=0.0.0.0 \
+                  --port=8000 \
+                  ${EXTRA}
+            env:
+              - name: RAY_ADDRESS
+                value: "127.0.0.1:6379"
+              - name: TP_SIZE
+                value: "__TP_SIZE__"
+              - name: HOME
+                value: "/home/ray"
+              - name: VLLM_CACHE_ROOT
+                value: "/models/.vllm-cache"
+              - name: HF_HOME
+                value: "/models/.hf-home"
+              - name: VLLM_ENGINE_READY_TIMEOUT_S
+                value: "3600"
+              - name: NCCL_IB_DISABLE
+                value: "__NCCL_IB_DISABLE__"
+              - name: NCCL_SOCKET_IFNAME
+                value: "__NCCL_SOCKET_IFNAME__"
+              - name: GLOO_SOCKET_IFNAME
+                value: "__NCCL_SOCKET_IFNAME__"
+              # ---- RHOAI 2.x mTLS, by hand ----
+              # Copies of exactly what the CodeFlare webhook injects into
+              # container 0 (envVarList() in its raycluster_webhook.go). The
+              # webhook does not touch sidecars, so without these the driver
+              # fails to reach the GCS once mTLS is on — which it is by default.
+              - name: MY_POD_IP
+                valueFrom:
+                  fieldRef:
+                    fieldPath: status.podIP
+              - name: RAY_USE_TLS
+                value: "1"
+              - name: RAY_TLS_SERVER_CERT
+                value: "/home/ray/workspace/tls/server.crt"
+              - name: RAY_TLS_SERVER_KEY
+                value: "/home/ray/workspace/tls/server.key"
+              - name: RAY_TLS_CA_CERT
+                value: "/home/ray/workspace/tls/ca.crt"
+            ports:
+              - { containerPort: 8000, name: http }
+            startupProbe:
+              httpGet: { path: /health, port: 8000 }
+              periodSeconds: 15
+              failureThreshold: 320   # 80 minutes
+            readinessProbe:
+              httpGet: { path: /health, port: 8000 }
+              periodSeconds: 10
+              failureThreshold: 3
+            resources:
+              requests:
+                cpu: "8"
+                memory: 32Gi
+              limits:
+                memory: 64Gi
+            volumeMounts:
+              - { name: weights, mountPath: /models }
+              - { name: ray-home, mountPath: /home/ray }
+              - { name: shm, mountPath: /dev/shm }
+              # The matching halves of the env above. `server-cert` is the
+              # emptyDir the create-cert init container writes into, and
+              # `ca-vol` is the ca-secret-<cluster> Secret; the webhook adds
+              # both volumes at pod level, so mounting them here is safe even
+              # though they are not declared in this file. Nested under
+              # /home/ray on purpose — the deeper mount wins over ray-home.
+              - { name: ca-vol, mountPath: /home/ray/workspace/ca, readOnly: true }
+              - { name: server-cert, mountPath: /home/ray/workspace/tls }
+        volumes:
+          - name: weights
+            persistentVolumeClaim:
+              claimName: beam-weights
+          - name: ray-home
+            emptyDir: {}
+          - name: shm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 64Gi
+          # ca-vol / server-cert / proxy-tls-secret are appended by the
+          # CodeFlare webhook; declaring them here would duplicate what it
+          # adds and trip its immutability validation.
+
+  # ---------------------------------------------------------------------------
+  # Workers: the remaining TP ranks, one pod per extra GPU node
+  # ---------------------------------------------------------------------------
+  workerGroupSpecs:
+    - groupName: tp-workers
+      replicas: __WORKER_REPLICAS__
+      minReplicas: __WORKER_REPLICAS__
+      maxReplicas: __WORKER_REPLICAS__
+      rayStartParams:
+        num-gpus: "__WORKER_GPUS__"
+      template:
+        metadata:
+          labels:
+            app: beam
+        spec:
+          tolerations:
+            - key: nvidia.com/gpu.product
+              operator: Exists
+              effect: NoSchedule
+          containers:
+            # Index 0 again — the worker group has no sidecar, so the webhook's
+            # mTLS injection lands on the right container unaided.
+            - name: ray-worker
+              image: __IMAGE__
+              env:
+                - name: HOME
+                  value: "/home/ray"
+                - name: VLLM_CACHE_ROOT
+                  value: "/models/.vllm-cache"
+                - name: HF_HOME
+                  value: "/models/.hf-home"
+                - name: NCCL_IB_DISABLE
+                  value: "__NCCL_IB_DISABLE__"
+                - name: NCCL_SOCKET_IFNAME
+                  value: "__NCCL_SOCKET_IFNAME__"
+                - name: GLOO_SOCKET_IFNAME
+                  value: "__NCCL_SOCKET_IFNAME__"
+                - name: NCCL_DEBUG
+                  value: "WARN"
+              resources:
+                requests:
+                  cpu: "16"
+                  memory: 128Gi
+                limits:
+                  nvidia.com/gpu: "__WORKER_GPUS__"
+                  memory: 256Gi
+              volumeMounts:
+                - { name: weights, mountPath: /models }
+                - { name: ray-home, mountPath: /home/ray }
+                - { name: shm, mountPath: /dev/shm }
+          volumes:
+            - name: weights
+              persistentVolumeClaim:
+                claimName: beam-weights
+            - name: ray-home
+              emptyDir: {}
+            - name: shm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 64Gi

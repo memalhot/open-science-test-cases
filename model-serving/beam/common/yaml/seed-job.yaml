@@ -1,0 +1,77 @@
+# One-shot Job that stages the Beam NVFP4 weights onto the RWX PVC, then exits.
+# up.sh runs this to completion BEFORE creating the RayCluster, so vLLM never
+# starts against an empty /models.
+#
+# This is a 294GB / 53-shard download. On a fast link it is ~30-60 min; budget
+# longer for a cold one. Re-running is safe and cheap: `hf download` skips files
+# already present, so an interrupted seed resumes rather than restarting.
+#
+# No GPU request and no GPU toleration: this Job is pure network+disk, so it
+# schedules on an ordinary worker and leaves both GPU nodes free.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: beam-seed
+  labels:
+    app: beam
+spec:
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        app: beam
+        job: beam-seed
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          # Reuse the vLLM image — it already ships the `hf` CLI
+          # (huggingface_hub). NB: the legacy `huggingface-cli` is deprecated and
+          # no longer functional in these images, so we must use `hf download`.
+          image: __IMAGE__
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              echo "Downloading __MODEL_ID__ -> __MODEL_PATH__ (294GB, 53 shards)"
+              hf download "__MODEL_ID__" --local-dir "__MODEL_PATH__"
+              echo "--- staged files ---"
+              ls -la "__MODEL_PATH__" | head -20
+              shards=$(ls "__MODEL_PATH__"/*.safetensors 2>/dev/null | wc -l)
+              echo "safetensors shards on disk: ${shards}"
+              # The index names every shard; a short count means a silently
+              # truncated download that would only surface as a confusing vLLM
+              # load error 40 minutes later.
+              [ "${shards}" -eq 53 ] || { echo "FATAL: expected 53 shards"; exit 1; }
+              echo "Seed complete."
+          env:
+            # OpenShift runs the pod as a random UID with HOME=/ (not writable).
+            # The large shards come down over HuggingFace's Xet backend, whose
+            # chunk cache lives under $HF_HOME (default ~/.cache/huggingface).
+            # With an unwritable HOME that write fails mid-download with
+            #   RuntimeError: Data processing error: I/O error: Permission denied
+            # and — deceptively — only AFTER the small non-Xet files (config.json,
+            # tokenizer.json) have succeeded. Point both at writable paths.
+            - name: HF_HOME
+              value: "/models/.hf-home"
+            - name: HOME
+              value: "/tmp"
+            # Optional: improves HF rate limits. Beam is Apache-2.0 and ungated,
+            # so the Job runs fine without it.
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef: { name: hf-token, key: token, optional: true }
+            - name: HF_HUB_ENABLE_HF_TRANSFER
+              value: "0"
+          resources:
+            requests:
+              cpu: "4"
+              memory: 16Gi
+            limits:
+              memory: 32Gi
+          volumeMounts:
+            - { name: weights, mountPath: /models }
+      volumes:
+        - name: weights
+          persistentVolumeClaim:
+            claimName: beam-weights
