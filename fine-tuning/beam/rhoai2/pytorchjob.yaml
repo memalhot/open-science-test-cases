@@ -1,0 +1,248 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: beam-lora-sft-rhoai2
+  annotations:
+    description: >-
+      LoRA supervised fine-tuning for Reflection Beam 1.0 (501B-A23B) as a
+      Kubeflow Training Operator v1 PyTorchJob — the RHOAI 2.25 recipe.
+
+      Differs from ../rhoai3/trainjob.yaml (Kubeflow Trainer v2) in three ways:
+      the API group is kubeflow.org/v1 rather than trainer.kubeflow.org/v1alpha1;
+      there is no ClusterTrainingRuntime, so the pod template is written out in
+      full rather than patched over a blueprint; and the node count is split
+      across Master (always 1) plus Worker (NUM_NODES-1) replica specs instead
+      of a single numNodes field. The container must be named `pytorch` — the
+      operator finds it by name to inject the rendezvous environment.
+
+      NOTE ON SIZING: Reflection's published LoRA SFT recipe is one node of
+      8x B300, or four nodes of 8x H100. The BF16 base weights alone are
+      1003GB, so a cluster with fewer than ~32 H100-class GPUs cannot run this
+      to completion regardless of the other parameters. Run ./validate.sh.
+parameters:
+  - name: JOB_NAME
+    value: beam-lora-sft
+  - name: IMAGE
+    description: Training image built from ../Containerfile.
+    value: quay.io/memalhot/beam-fine-tune:latest
+  - name: MODEL_ID
+    description: >-
+      HuggingFace repo for the BF16 base. Deliberately NOT the NVFP4 serving
+      checkpoint: LoRA needs full-precision base weights to backpropagate
+      through the frozen layers.
+    value: reflection/Beam-1.0-501B-A23B
+  - name: MODEL_PATH
+    description: Local path on the weights PVC; takes precedence over MODEL_ID.
+    value: /weights/Beam-1.0-501B-A23B
+  - name: DATASET_NAME
+    value: HuggingFaceH4/Multilingual-Thinking
+  - name: WORKER_REPLICAS
+    description: >-
+      NUM_NODES minus one. The Master replica is always exactly 1 and counts
+      as a training node, so 4 total nodes means 1 Master + 3 Workers.
+    value: "3"
+  - name: GPUS_PER_NODE
+    value: "8"
+  - name: NUM_EPOCHS
+    value: "1"
+  - name: LEARNING_RATE
+    value: "1e-4"
+  - name: BATCH_SIZE
+    value: "1"
+  - name: GRAD_ACCUM
+    value: "8"
+  - name: MAX_SEQ_LENGTH
+    value: "4096"
+  - name: LORA_RANK
+    value: "16"
+  - name: LORA_ALPHA
+    value: "32"
+  - name: LORA_TARGET_REGEX
+    description: >-
+      Attention (260 modules) + the three dense MLP layers (9). Single-quoted
+      so YAML does not interpret the backslash escapes. Validated against the
+      real checkpoint parameter names by ./validate.sh.
+    value: '.*(self_attn\.(q|k|v|o|gate)_proj|layers\.[0-2]\.mlp\.(gate|up|down)_proj)$'
+  - name: WEIGHTS_PVC
+    value: beam-train-weights
+  - name: WEIGHTS_SIZE
+    description: BF16 Beam is 1003GB; leave headroom for the Xet download cache.
+    value: 1200Gi
+  - name: OUTPUT_PVC
+    value: beam-train-output
+  - name: OUTPUT_SIZE
+    value: 100Gi
+  - name: STORAGE_CLASS
+    description: Must be RWX — every training node mounts the weights at once.
+    value: pure-fb-nfsv4
+  - name: LOCAL_QUEUE
+    description: >-
+      Kueue LocalQueue for admission. On RHOAI 2.x distributed workloads are
+      normally Kueue-gated; leave as the default only if the cluster has a
+      default LocalQueue. fine-tune.sh strips the label when this is empty.
+    value: ""
+  - name: MAX_RESTARTS
+    value: "3"
+
+objects:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: ${WEIGHTS_PVC}
+      labels: { app: beam-train }
+    spec:
+      accessModes: [ReadWriteMany]
+      storageClassName: ${STORAGE_CLASS}
+      resources:
+        requests:
+          storage: ${WEIGHTS_SIZE}
+
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: ${OUTPUT_PVC}
+      labels: { app: beam-train }
+    spec:
+      # Also RWX: every rank's trainer writes checkpoints, and rank 0 writes
+      # the final adapter.
+      accessModes: [ReadWriteMany]
+      storageClassName: ${STORAGE_CLASS}
+      resources:
+        requests:
+          storage: ${OUTPUT_SIZE}
+
+  - apiVersion: kubeflow.org/v1
+    kind: PyTorchJob
+    metadata:
+      name: ${JOB_NAME}
+      labels:
+        app: beam-train
+        kueue.x-k8s.io/queue-name: "${LOCAL_QUEUE}"
+    spec:
+      # Processes per node. `spec.nprocPerNode` is the current field;
+      # elasticPolicy.nProcPerNode is deprecated as of training-operator v1.7.
+      nprocPerNode: "${GPUS_PER_NODE}"
+      elasticPolicy:
+        # c10d rendezvous, hosted by the Master. The operator fills in
+        # PET_MASTER_ADDR / PET_MASTER_PORT / PET_NNODES / PET_NODE_RANK, which
+        # is what lets the container command be a bare `torchrun`.
+        rdzvBackend: c10d
+        minReplicas: 1
+        maxReplicas: 100
+        maxRestarts: ${{MAX_RESTARTS}}
+      runPolicy:
+        cleanPodPolicy: None
+      pytorchReplicaSpecs:
+        # Master is rank 0 and a full training node in its own right — it holds
+        # GPUs and runs the same script. Total nodes = 1 + WORKER_REPLICAS.
+        Master:
+          replicas: 1
+          restartPolicy: OnFailure
+          template:
+            metadata:
+              labels: { app: beam-train }
+            spec:
+              tolerations:
+                - key: nvidia.com/gpu.product
+                  operator: Exists
+                  effect: NoSchedule
+              containers:
+                - name: pytorch
+                  image: ${IMAGE}
+                  command: ["torchrun"]
+                  args: ["/workspace/train.py"]
+                  env:
+                    - { name: MODEL_ID,          value: "${MODEL_ID}" }
+                    - { name: MODEL_PATH,        value: "${MODEL_PATH}" }
+                    - { name: DATASET_NAME,      value: "${DATASET_NAME}" }
+                    - { name: OUTPUT_DIR,        value: "/output/${JOB_NAME}" }
+                    - { name: NUM_EPOCHS,        value: "${NUM_EPOCHS}" }
+                    - { name: LEARNING_RATE,     value: "${LEARNING_RATE}" }
+                    - { name: BATCH_SIZE,        value: "${BATCH_SIZE}" }
+                    - { name: GRAD_ACCUM,        value: "${GRAD_ACCUM}" }
+                    - { name: MAX_SEQ_LENGTH,    value: "${MAX_SEQ_LENGTH}" }
+                    - { name: LORA_RANK,         value: "${LORA_RANK}" }
+                    - { name: LORA_ALPHA,        value: "${LORA_ALPHA}" }
+                    - { name: LORA_TARGET_REGEX, value: "${LORA_TARGET_REGEX}" }
+                    # Random UID, unwritable HOME, HF/torch caches that need
+                    # somewhere writable — same reasoning as the serving stack.
+                    - { name: HOME,              value: "/tmp" }
+                    - { name: HF_HOME,           value: "/weights/.hf-home" }
+                    - { name: NCCL_IB_DISABLE,   value: "1" }
+                    - { name: NCCL_SOCKET_IFNAME, value: "eth0" }
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "${GPUS_PER_NODE}"
+                  volumeMounts:
+                    - { name: weights, mountPath: /weights }
+                    - { name: output, mountPath: /output }
+                    - { name: shm, mountPath: /dev/shm }
+              volumes:
+                - name: weights
+                  persistentVolumeClaim:
+                    claimName: ${WEIGHTS_PVC}
+                - name: output
+                  persistentVolumeClaim:
+                    claimName: ${OUTPUT_PVC}
+                # NCCL and the dataloader both need far more than the 64MB
+                # container default.
+                - name: shm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 64Gi
+
+        # Identical to Master apart from the replica count. v1 has no way to
+        # share one pod template between the two specs, so this is duplicated
+        # by necessity — keep the two in sync when editing. (Trainer v2 removed
+        # exactly this duplication, which is why ../rhoai3/ is shorter.)
+        Worker:
+          replicas: ${{WORKER_REPLICAS}}
+          restartPolicy: OnFailure
+          template:
+            metadata:
+              labels: { app: beam-train }
+            spec:
+              tolerations:
+                - key: nvidia.com/gpu.product
+                  operator: Exists
+                  effect: NoSchedule
+              containers:
+                - name: pytorch
+                  image: ${IMAGE}
+                  command: ["torchrun"]
+                  args: ["/workspace/train.py"]
+                  env:
+                    - { name: MODEL_ID,          value: "${MODEL_ID}" }
+                    - { name: MODEL_PATH,        value: "${MODEL_PATH}" }
+                    - { name: DATASET_NAME,      value: "${DATASET_NAME}" }
+                    - { name: OUTPUT_DIR,        value: "/output/${JOB_NAME}" }
+                    - { name: NUM_EPOCHS,        value: "${NUM_EPOCHS}" }
+                    - { name: LEARNING_RATE,     value: "${LEARNING_RATE}" }
+                    - { name: BATCH_SIZE,        value: "${BATCH_SIZE}" }
+                    - { name: GRAD_ACCUM,        value: "${GRAD_ACCUM}" }
+                    - { name: MAX_SEQ_LENGTH,    value: "${MAX_SEQ_LENGTH}" }
+                    - { name: LORA_RANK,         value: "${LORA_RANK}" }
+                    - { name: LORA_ALPHA,        value: "${LORA_ALPHA}" }
+                    - { name: LORA_TARGET_REGEX, value: "${LORA_TARGET_REGEX}" }
+                    - { name: HOME,              value: "/tmp" }
+                    - { name: HF_HOME,           value: "/weights/.hf-home" }
+                    - { name: NCCL_IB_DISABLE,   value: "1" }
+                    - { name: NCCL_SOCKET_IFNAME, value: "eth0" }
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "${GPUS_PER_NODE}"
+                  volumeMounts:
+                    - { name: weights, mountPath: /weights }
+                    - { name: output, mountPath: /output }
+                    - { name: shm, mountPath: /dev/shm }
+              volumes:
+                - name: weights
+                  persistentVolumeClaim:
+                    claimName: ${WEIGHTS_PVC}
+                - name: output
+                  persistentVolumeClaim:
+                    claimName: ${OUTPUT_PVC}
+                - name: shm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 64Gi

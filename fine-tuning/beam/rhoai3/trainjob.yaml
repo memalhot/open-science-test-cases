@@ -1,0 +1,171 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: beam-lora-sft
+  annotations:
+    description: >-
+      LoRA supervised fine-tuning for Reflection Beam 1.0 (501B-A23B) as a
+      Kubeflow Trainer v2 TrainJob. Creates the shared weight and output PVCs
+      and the multi-node TrainJob itself.
+
+      NOTE ON SIZING: Reflection's published LoRA SFT recipe is one node of
+      8x B300, or four nodes of 8x H100. The defaults below encode the
+      four-node H100 shape. The BF16 base weights alone are 1003GB, so a
+      deployment with fewer than ~32 H100-class GPUs cannot run this to
+      completion regardless of the other parameters. Run ./validate.sh to see
+      what the current cluster can and cannot do.
+parameters:
+  - name: JOB_NAME
+    value: beam-lora-sft
+  - name: IMAGE
+    description: Training image built from this directory's Containerfile.
+    value: quay.io/memalhot/beam-fine-tune:latest
+  - name: RUNTIME
+    description: ClusterTrainingRuntime providing the torchrun rendezvous.
+    value: torch-distributed
+  - name: MODEL_ID
+    description: >-
+      HuggingFace repo for the BF16 base. Deliberately NOT the NVFP4 serving
+      checkpoint: LoRA needs full-precision base weights to backpropagate
+      through the frozen layers.
+    value: reflection/Beam-1.0-501B-A23B
+  - name: MODEL_PATH
+    description: Local path on the weights PVC; takes precedence over MODEL_ID.
+    value: /weights/Beam-1.0-501B-A23B
+  - name: DATASET_NAME
+    value: HuggingFaceH4/Multilingual-Thinking
+  - name: NUM_NODES
+    description: Training nodes. 4 (x8 H100) is the documented minimum for this model.
+    value: "4"
+  - name: GPUS_PER_NODE
+    value: "8"
+  - name: NUM_EPOCHS
+    value: "1"
+  - name: LEARNING_RATE
+    value: "1e-4"
+  - name: BATCH_SIZE
+    value: "1"
+  - name: GRAD_ACCUM
+    value: "8"
+  - name: MAX_SEQ_LENGTH
+    value: "4096"
+  - name: LORA_RANK
+    value: "16"
+  - name: LORA_ALPHA
+    value: "32"
+  - name: LORA_TARGET_REGEX
+    description: >-
+      Attention (260 modules) + the three dense MLP layers (9). Single-quoted
+      so YAML does not try to interpret the backslash escapes. To also adapt
+      the 37,632 expert projections, use
+      '.*(self_attn\.(q|k|v|o|gate)_proj|mlp\.(experts\.\d+\.)?(gate|up|down)_proj)$'.
+      Validated against the real checkpoint parameter names by ./validate.sh.
+    value: '.*(self_attn\.(q|k|v|o|gate)_proj|layers\.[0-2]\.mlp\.(gate|up|down)_proj)$'
+  - name: WEIGHTS_PVC
+    value: beam-train-weights
+  - name: WEIGHTS_SIZE
+    description: BF16 Beam is 1003GB; leave headroom for the Xet download cache.
+    value: 1200Gi
+  - name: OUTPUT_PVC
+    value: beam-train-output
+  - name: OUTPUT_SIZE
+    value: 100Gi
+  - name: STORAGE_CLASS
+    description: Must be RWX — every training node mounts the weights at once.
+    value: pure-fb-nfsv4
+
+objects:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: ${WEIGHTS_PVC}
+      labels: { app: beam-train }
+    spec:
+      accessModes: [ReadWriteMany]
+      storageClassName: ${STORAGE_CLASS}
+      resources:
+        requests:
+          storage: ${WEIGHTS_SIZE}
+
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: ${OUTPUT_PVC}
+      labels: { app: beam-train }
+    spec:
+      # Also RWX: every rank's trainer writes checkpoints, and rank 0 writes
+      # the final adapter.
+      accessModes: [ReadWriteMany]
+      storageClassName: ${STORAGE_CLASS}
+      resources:
+        requests:
+          storage: ${OUTPUT_SIZE}
+
+  - apiVersion: trainer.kubeflow.org/v1alpha1
+    kind: TrainJob
+    metadata:
+      name: ${JOB_NAME}
+      labels: { app: beam-train }
+    spec:
+      runtimeRef:
+        name: ${RUNTIME}
+      trainer:
+        image: ${IMAGE}
+        numNodes: ${{NUM_NODES}}
+        # The torch runtime plugin turns this into PET_NPROC_PER_NODE, which
+        # torchrun reads; it is also what train.py sees as WORLD_SIZE/node.
+        numProcPerNode: ${{GPUS_PER_NODE}}
+        command: ["torchrun"]
+        args: ["/workspace/train.py"]
+        env:
+          - { name: MODEL_ID,          value: "${MODEL_ID}" }
+          - { name: MODEL_PATH,        value: "${MODEL_PATH}" }
+          - { name: DATASET_NAME,      value: "${DATASET_NAME}" }
+          - { name: OUTPUT_DIR,        value: "/output/${JOB_NAME}" }
+          - { name: NUM_EPOCHS,        value: "${NUM_EPOCHS}" }
+          - { name: LEARNING_RATE,     value: "${LEARNING_RATE}" }
+          - { name: BATCH_SIZE,        value: "${BATCH_SIZE}" }
+          - { name: GRAD_ACCUM,        value: "${GRAD_ACCUM}" }
+          - { name: MAX_SEQ_LENGTH,    value: "${MAX_SEQ_LENGTH}" }
+          - { name: LORA_RANK,         value: "${LORA_RANK}" }
+          - { name: LORA_ALPHA,        value: "${LORA_ALPHA}" }
+          - { name: LORA_TARGET_REGEX, value: "${LORA_TARGET_REGEX}" }
+          # Same reasoning as the serving stack: random UID, unwritable HOME,
+          # and HF/torch caches that must land somewhere writable.
+          - { name: HOME,              value: "/tmp" }
+          - { name: HF_HOME,           value: "/weights/.hf-home" }
+          # No RDMA device plugin is exposed on this cluster, so inter-node
+          # collectives run over TCP. Remove these two if RDMA is ever wired up.
+          - { name: NCCL_IB_DISABLE,   value: "1" }
+          - { name: NCCL_SOCKET_IFNAME, value: "eth0" }
+        resourcesPerNode:
+          limits:
+            nvidia.com/gpu: "${GPUS_PER_NODE}"
+      podTemplateOverrides:
+        # `node` is the replicated job name in the torch-distributed runtime.
+        - targetJobs:
+            - name: node
+          spec:
+            tolerations:
+              - key: nvidia.com/gpu.product
+                operator: Exists
+                effect: NoSchedule
+            volumes:
+              - name: weights
+                persistentVolumeClaim:
+                  claimName: ${WEIGHTS_PVC}
+              - name: output
+                persistentVolumeClaim:
+                  claimName: ${OUTPUT_PVC}
+              # NCCL and the dataloader both need far more than the 64MB
+              # container default.
+              - name: shm
+                emptyDir:
+                  medium: Memory
+                  sizeLimit: 64Gi
+            containers:
+              - name: node
+                volumeMounts:
+                  - { name: weights, mountPath: /weights }
+                  - { name: output, mountPath: /output }
+                  - { name: shm, mountPath: /dev/shm }

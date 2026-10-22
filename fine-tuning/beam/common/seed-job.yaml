@@ -1,0 +1,72 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: beam-train-seed
+  annotations:
+    description: >-
+      Stages the BF16 Beam 1.0 base weights onto the training weight PVC.
+      This is a 1003GB download — far larger than the 294GB NVFP4 checkpoint
+      the serving stack uses — because LoRA needs full-precision base weights.
+      Safe to re-run: `hf download` skips files already present, so an
+      interrupted seed resumes.
+parameters:
+  - name: JOB_NAME
+    value: beam-train-seed
+  - name: IMAGE
+    value: quay.io/memalhot/beam-fine-tune:latest
+  - name: MODEL_ID
+    value: reflection/Beam-1.0-501B-A23B
+  - name: MODEL_PATH
+    value: /weights/Beam-1.0-501B-A23B
+  - name: WEIGHTS_PVC
+    value: beam-train-weights
+
+objects:
+  - apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: ${JOB_NAME}
+      labels: { app: beam-train }
+    spec:
+      backoffLimit: 4
+      template:
+        metadata:
+          # Quoted: ${...} inside a YAML flow mapping would otherwise be read
+          # as flow indicators and fail to parse.
+          labels: { app: beam-train, job: "${JOB_NAME}" }
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: seed
+              image: ${IMAGE}
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  echo "Downloading ${MODEL_ID} -> ${MODEL_PATH} (~1003GB)"
+                  hf download "${MODEL_ID}" --local-dir "${MODEL_PATH}"
+                  echo "--- staged ---"
+                  du -sh "${MODEL_PATH}"
+                  ls "${MODEL_PATH}"/*.safetensors | wc -l
+                  echo "Seed complete."
+              env:
+                # Random UID with an unwritable HOME breaks the Xet chunk cache
+                # mid-download — and only after the small non-Xet files have
+                # already succeeded, which makes it look like a late failure
+                # rather than a permissions problem. Point both somewhere
+                # writable.
+                - { name: HF_HOME, value: "/weights/.hf-home" }
+                - { name: HOME, value: "/tmp" }
+                - { name: HF_HUB_ENABLE_HF_TRANSFER, value: "0" }
+                - name: HUGGING_FACE_HUB_TOKEN
+                  valueFrom:
+                    secretKeyRef: { name: hf-token, key: token, optional: true }
+              resources:
+                requests: { cpu: "4", memory: 16Gi }
+                limits: { memory: 32Gi }
+              volumeMounts:
+                - { name: weights, mountPath: /weights }
+          volumes:
+            - name: weights
+              persistentVolumeClaim:
+                claimName: ${WEIGHTS_PVC}

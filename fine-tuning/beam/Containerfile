@@ -1,0 +1,30 @@
+# Training image for Beam 1.0 LoRA SFT.
+#
+#   podman build -t quay.io/memalhot/beam-fine-tune:latest -f Containerfile .
+#
+# Pinned to Transformers 5.x on purpose: Beam's architecture, its Harmony chat
+# template, and `transformers.distributed.DistributedConfig` (the load-time
+# tensor/expert sharding this recipe depends on) all require v5. The 4.x line
+# used by the granite and qwen images fails on Beam with an unrecognized model
+# type, so these images are deliberately not shared.
+FROM nvcr.io/nvidia/pytorch:25.09-py3
+
+RUN pip install --no-cache-dir \
+    "transformers==5.0.0" \
+    "trl==0.26.0" \
+    "peft==0.18.0" \
+    "datasets==4.4.1" \
+    "accelerate==1.12.0" \
+    "huggingface_hub[hf_xet]" \
+    scipy \
+    sentencepiece \
+    protobuf
+
+WORKDIR /workspace
+COPY train.py /workspace/train.py
+
+# torchrun is the entrypoint the Kubeflow torch runtime expects; the TrainJob
+# supplies the PET_* env vars (nnodes, nproc-per-node, rendezvous) that it
+# reads. Overridden by the TrainJob's command anyway — declared here so the
+# image is runnable on its own for a single-node smoke test.
+ENTRYPOINT ["torchrun", "/workspace/train.py"]
