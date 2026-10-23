@@ -6,7 +6,8 @@ Validates that all OpenShift operators, configurations, and RHOAI components req
 
 ```bash
 cd component-checks
-./checks.sh          # operator & platform readiness
+./checks.sh          # operator & platform readiness (RHOAI 2.x)
+./checks-rhoai3.sh   # operator & platform readiness (RHOAI 3.x)
 ./oc-virt-checks.sh  # OpenShift Virtualization (CNV) health
 ./taint-checks.sh    # GPU node labels & taints
 ./negative-tests.sh  # failure-mode & teardown tests
@@ -15,6 +16,19 @@ cd component-checks
 ```
 
 Requires `oc` CLI authenticated to the target cluster.
+
+### Which `checks` script?
+
+Match the script to the cluster's `rhods-operator` CSV major version — the two generations differ enough that running the wrong one produces a page of meaningless failures. `checks-rhoai3.sh` fails fast if it finds a 2.x operator.
+
+| | `checks.sh` (2.x) | `checks-rhoai3.sh` (3.x) |
+|---|---|---|
+| Pipelines condition | `DataSciencePipelinesReady` | `AIPipelinesReady` |
+| Distributed workloads | `CodeFlareReady` | `KueueReady`, `RayReady`, `TrainerReady` |
+| Multi-model serving | `ModelMeshServingReady` | removed — KServe only |
+| Ingress | `ServiceMeshControlPlane` (maistra.io) + Serverless | Data Science Gateway (Gateway API); mesh optional |
+| Service Mesh deployment | `istio-operator` | `servicemesh-operator3` |
+| Removed components | graded as FAIL | SKIPped, by reading `spec.components.<x>.managementState` |
 
 ## What It Checks
 
@@ -84,6 +98,37 @@ Separate script for GPU node label and taint validation. For each node with `nvi
 | Resource | Expected State |
 |----------|---------------|
 | ServiceMeshControlPlane | `Ready: True` |
+
+## RHOAI 3.x Checks (`checks-rhoai3.sh`)
+
+Everything `checks.sh` does, retargeted at the 3.x object model, plus the following.
+
+**Operator health** — `rhods-operator`, `nfd-controller-manager`, `gpu-operator`, `nvidia-network-operator-controller-manager`, `maintenance-operator-controller-manager`. Serverless (`knative-openshift`) and Service Mesh (`servicemesh-operator3`) are optional: absent is a SKIP, installed-but-unhealthy is a FAIL.
+
+**DSCInitialization** — `Available: True`, `ReconcileComplete: True`, `Degraded: False`, `Upgradeable: True`. The DSCI owns the gateway and application namespaces, so a Ready DSC on a Degraded DSCI is still a broken install. Observability conditions are printed, not graded — they are False by design unless configured in the DSCI.
+
+**DataScienceCluster components** — graded against `spec.components.<x>.managementState` rather than a fixed list: `Managed`/`Unmanaged` must report Ready, `Removed` is a SKIP. Covers Dashboard, Workbenches, AIPipelines, KServe, Ray, Trainer, TrustyAI, Kueue, ModelRegistry, Feast, LlamaStack.
+
+`KserveLLMInferenceServiceDependencies` and `KserveLLMInferenceServiceWideEPDependencies` are reported, not graded — they go `PreConditionFailed` when Red Hat Connectivity Link or LeaderWorkerSet is not installed, which is only a problem if you want those serving paths.
+
+**Component controllers** — the Deployments behind the DSC conditions, in `redhat-ods-applications` (override with `RHOAI_APPS_NAMESPACE`): `rhods-dashboard`, `workbenches-operator`, `odh-notebook-controller-manager`, `kserve-controller-manager`, `odh-model-controller`, `llmisvc-controller-manager`, `kuberay-operator`, `kubeflow-trainer-controller-manager`, `data-science-pipelines-operator-controller-manager`, `trustyai-service-operator-controller-manager`. A controller that crashloops after a successful reconcile leaves the DSC reporting Ready.
+
+**Kueue** — `kueue-controller-manager` in `openshift-kueue-operator` plus the RHOAI component's `phase: Ready`. Kueue is `Unmanaged` by default in 3.x, so the component's own `DeploymentsAvailable` condition is False by design and is deliberately not graded.
+
+**Served APIs** — `inferenceservices`, `llminferenceservices`, `rayclusters`, `trainjobs`, `notebooks`, `hardwareprofiles`. Catches a component that reports Ready while the API you are about to post to is not served.
+
+**Data Science Gateway** — the 3.x replacement for per-component routes and the KServe mesh ingress:
+
+| Resource | Expected State |
+|----------|---------------|
+| `GatewayConfig/default-gateway` | `Ready: True` |
+| `Gateway/data-science-gateway` (`openshift-ingress`) | `Programmed: True` |
+| `app=kube-auth-proxy` pods | at least one Running |
+| `https://<gateway route>/` | any 2xx/3xx/4xx (unauthenticated, so 302 is the normal result) |
+
+**Networking** — OSSM 3 uses `Istio` (sailoperator.io), not `ServiceMeshControlPlane` (maistra.io), and RHOAI 3.x KServe serves raw Deployments behind the gateway. Any `Istio` CR that exists must be Ready; having none is a supported configuration and SKIPs.
+
+**RHOAI 2.x leftovers** — prints the pod count in `knative-serving`, `knative-eventing`, and `istio-system` so an upgraded cluster's empty namespaces don't read as failures, then lists what 3.x removed.
 
 ### OpenShift Virtualization (`oc-virt-checks.sh`)
 
@@ -165,4 +210,4 @@ Unlike `negative-tests.sh`, this script leaves its PVC and pods running so you c
 
 ## Output
 
-Reports PASS/FAIL per check with a summary. Exits `0` if all pass, `1` if any fail.
+Reports PASS/FAIL per check with a summary. Exits `0` if all pass, `1` if any fail. `checks-rhoai3.sh` also reports SKIP for components the cluster was deliberately configured without; skips do not affect the exit code.

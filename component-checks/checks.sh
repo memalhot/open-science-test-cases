@@ -1,4 +1,6 @@
 #!/bin/bash
+# Operator & platform readiness checks for RHOAI 2.x.
+# On a RHOAI 3.x cluster run ./checks-rhoai3.sh instead — see README.md.
 set -euo pipefail
 
 PASSED=0
