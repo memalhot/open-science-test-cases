@@ -6,10 +6,11 @@
 # CodeFlare operator does to a RayCluster on 2.x, which it does NOT do on 3.x:
 #
 #   1. A mutating webhook injects mTLS into the Ray pods — but only into
-#      container index 0. Our vLLM driver is a sidecar at index 1, so it gets
-#      neither the RAY_TLS_* env nor the cert mounts, and cannot talk to a
-#      TLS-enabled GCS. We therefore add both by hand below. This is the single
-#      most important difference between the two variants.
+#      container index 0. This used to be the main complication here, because
+#      vLLM ran as a sidecar at index 1 and needed the RAY_TLS_* env and cert
+#      mounts copied by hand. vLLM now runs inside container 0 itself (see the
+#      container comment below for why it has to), so the webhook's injection
+#      covers it and the hand-written copies are gone.
 #   2. The same webhook appends an `oauth-proxy` container (port 8443) to the
 #      head and overwrites spec.headGroupSpec.template.spec.serviceAccountName
 #      with "<cluster>-oauth-proxy". We deliberately do not set a service
@@ -76,6 +77,13 @@ spec:
                 value: "__NCCL_SOCKET_IFNAME__"
               - name: NCCL_DEBUG
                 value: "WARN"
+              # The TP ranks on this node are Ray actors spawned by the raylet
+              # in THIS container, so they inherit this env, not the vllm
+              # sidecar's. See the sidecar's comment for why symmetric memory
+              # has to be off; setting it only on the driver would miss every
+              # rank that actually takes part in the rendezvous.
+              - name: VLLM_ALLREDUCE_USE_SYMM_MEM
+                value: "0"
               # RAY_USE_TLS / RAY_TLS_* and the ca-vol + server-cert mounts are
               # injected here by the CodeFlare webhook. Not repeated by hand:
               # its validating webhook treats them as immutable and rejects a
@@ -95,6 +103,8 @@ spec:
               - { name: weights, mountPath: /models }
               - { name: ray-home, mountPath: /home/ray }
               - { name: shm, mountPath: /dev/shm }
+              # Shared with the vllm sidecar — see the volume's comment below.
+              - { name: ray-tmp, mountPath: /tmp/ray }
 
           - name: vllm
             image: __IMAGE__
@@ -152,6 +162,8 @@ spec:
                   --served-model-name=__SERVED_NAME__ \
                   --tensor-parallel-size=__TP_SIZE__ \
                   --distributed-executor-backend=ray \
+                  --cpu-distributed-timeout-seconds=__DIST_TIMEOUT_S__ \
+                  --distributed-timeout-seconds=__DIST_TIMEOUT_S__ \
                   --max-model-len=__MAX_MODEL_LEN__ \
                   --gpu-memory-utilization=__GPU_MEM_UTIL__ \
                   --enable-auto-tool-choice \
@@ -179,6 +191,17 @@ spec:
                 value: "__NCCL_SOCKET_IFNAME__"
               - name: GLOO_SOCKET_IFNAME
                 value: "__NCCL_SOCKET_IFNAME__"
+              # PyTorch symmetric memory assumes every rank can reach the
+              # others over NVLink/P2P, which is false for a TP group split
+              # across two nodes. vLLM's SymmMemCommunicator checks device
+              # capability and world size but NOT node count (unlike
+              # CustomAllreduce and FlashInferAllReduce, which self-disable on
+              # multi-node), so at TP=8 on H100 it calls
+              # torch_symm_mem.rendezvous() and never returns. The hang raises
+              # nothing, so it surfaces as whichever timeout is shortest.
+              # Must match the worker container below.
+              - name: VLLM_ALLREDUCE_USE_SYMM_MEM
+                value: "0"
               # ---- RHOAI 2.x mTLS, by hand ----
               # Copies of exactly what the CodeFlare webhook injects into
               # container 0 (envVarList() in its raycluster_webhook.go). The
@@ -216,6 +239,7 @@ spec:
               - { name: weights, mountPath: /models }
               - { name: ray-home, mountPath: /home/ray }
               - { name: shm, mountPath: /dev/shm }
+              - { name: ray-tmp, mountPath: /tmp/ray }
               # The matching halves of the env above. `server-cert` is the
               # emptyDir the create-cert init container writes into, and
               # `ca-vol` is the ca-secret-<cluster> Secret; the webhook adds
@@ -234,6 +258,16 @@ spec:
             emptyDir:
               medium: Memory
               sizeLimit: 64Gi
+          # Ray's session directory, shared between ray-head and the vllm
+          # driver. `ray start` writes /tmp/ray/session_*/node_ip_address.json
+          # and a driver attaching to a GCS on the same host reads it back
+          # from its own filesystem — so with a private /tmp the sidecar
+          # connects to the GCS and then dies with
+          #   ValueError: Can't find a `node_ip_address.json` file ...
+          #               A ray instance hasn't started.
+          # which reads like the head never came up, when in fact it did.
+          - name: ray-tmp
+            emptyDir: {}
           # ca-vol / server-cert / proxy-tls-secret are appended by the
           # CodeFlare webhook; declaring them here would duplicate what it
           # adds and trip its immutability validation.
@@ -277,6 +311,11 @@ spec:
                   value: "__NCCL_SOCKET_IFNAME__"
                 - name: NCCL_DEBUG
                   value: "WARN"
+                # Must match the vllm container — the ranks on this node take
+                # part in the same rendezvous, so leaving it enabled here
+                # alone would hang just the same.
+                - name: VLLM_ALLREDUCE_USE_SYMM_MEM
+                  value: "0"
               resources:
                 requests:
                   cpu: "16"

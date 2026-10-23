@@ -41,9 +41,11 @@ load_config() {
   # `declare -px` does NOT work: `declare` inside a function makes the vars
   # function-local, so they vanish on return.)
   local __k __snap; __snap="$(mktemp)"
-  for __k in NAMESPACE MODEL_ID SERVED_NAME IMAGE TP_SIZE HEAD_GPUS WORKER_GPUS \
+  for __k in NAMESPACE MODEL_ID SERVED_NAME IMAGE BASE_IMAGE IMAGE_NAME TP_SIZE \
+             HEAD_GPUS WORKER_GPUS \
              WORKER_REPLICAS RAY_VERSION MAX_MODEL_LEN GPU_MEM_UTIL MOE_BACKEND \
-             KV_CACHE_DTYPE STORAGE_SIZE STORAGE_CLASS NCCL_IB_DISABLE \
+             KV_CACHE_DTYPE DIST_TIMEOUT_S STORAGE_SIZE STORAGE_CLASS \
+             NCCL_IB_DISABLE \
              NCCL_SOCKET_IFNAME HF_TOKEN LOCAL_QUEUE; do
     [ -n "${!__k+x}" ] && printf '%s=%q\n' "$__k" "${!__k}" >>"$__snap"
   done
@@ -51,12 +53,20 @@ load_config() {
   set -a; source "$cfg"; source "$__snap"; set +a
   rm -f "$__snap"
 
+  # The pods run the built image, not the base: IMAGE points at the
+  # ImageStream this namespace's build writes to. Set IMAGE explicitly to run
+  # a pre-built image and skip the build entirely.
+  IMAGE_NAME="${IMAGE_NAME:-vllm-beam-ray}"
+  IMAGE="${IMAGE:-image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/${IMAGE_NAME}:latest}"
+
   : "${NAMESPACE:?}" "${MODEL_ID:?}" "${SERVED_NAME:?}" "${IMAGE:?}" \
+    "${BASE_IMAGE:?}" "${IMAGE_NAME:?}" \
     "${TP_SIZE:?}" "${HEAD_GPUS:?}" "${WORKER_GPUS:?}" "${WORKER_REPLICAS:?}" \
     "${MAX_MODEL_LEN:?}" "${GPU_MEM_UTIL:?}" "${STORAGE_SIZE:?}"
   HF_TOKEN="${HF_TOKEN:-}"
   MOE_BACKEND="${MOE_BACKEND:-}"
   KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-auto}"
+  DIST_TIMEOUT_S="${DIST_TIMEOUT_S:-3600}"
   RAY_VERSION="${RAY_VERSION:-2.49.0}"
   STORAGE_CLASS="${STORAGE_CLASS:-pure-fb-nfsv4}"
   NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
@@ -87,6 +97,8 @@ render() {
   fi
   sed -e "s|__NAMESPACE__|${NAMESPACE}|g" \
       -e "s|__IMAGE__|${IMAGE}|g" \
+      -e "s|__BASE_IMAGE__|${BASE_IMAGE}|g" \
+      -e "s|__IMAGE_NAME__|${IMAGE_NAME}|g" \
       -e "s|__MODEL_ID__|${MODEL_ID}|g" \
       -e "s|__MODEL_SUBPATH__|${MODEL_SUBPATH}|g" \
       -e "s|__MODEL_PATH__|${MODEL_PATH}|g" \
@@ -100,6 +112,7 @@ render() {
       -e "s|__GPU_MEM_UTIL__|${GPU_MEM_UTIL}|g" \
       -e "s|__MOE_BACKEND__|${MOE_BACKEND}|g" \
       -e "s|__KV_CACHE_DTYPE__|${KV_CACHE_DTYPE}|g" \
+      -e "s|__DIST_TIMEOUT_S__|${DIST_TIMEOUT_S}|g" \
       -e "s|__STORAGE_SIZE__|${STORAGE_SIZE}|g" \
       -e "s|__STORAGE_CLASS__|${STORAGE_CLASS}|g" \
       -e "s|__NCCL_IB_DISABLE__|${NCCL_IB_DISABLE}|g" \
@@ -155,6 +168,32 @@ check_gpu_capacity() {
   info "  KubeRay present; $gpus GPU(s) allocatable cluster-wide (need $TP_SIZE)"
 }
 
+# Build the serving image (BASE_IMAGE + Ray) in-cluster, unless it is already
+# there. See common/yaml/buildconfig.yaml for why it has to exist at all.
+#
+# Skipped entirely when IMAGE was set explicitly, since that means the caller
+# is pointing at an image they built elsewhere.
+ensure_serving_image() {
+  local force="${1:-0}"
+
+  if [ "$IMAGE" != "image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/${IMAGE_NAME}:latest" ]; then
+    info "  IMAGE set explicitly ($IMAGE) — not building"
+    return 0
+  fi
+
+  if [ "$force" -eq 0 ] && oc get istag "${IMAGE_NAME}:latest" -n "$NAMESPACE" >/dev/null 2>&1; then
+    info "  Serving image ${IMAGE_NAME}:latest present (rebuild: ./up.sh --rebuild-image)"
+    return 0
+  fi
+
+  info "Building the serving image: ${BASE_IMAGE} + ray[default]==${RAY_VERSION}"
+  echo "      the base layer is ~25GB, so a cold build takes a while"
+  render buildconfig.yaml | oc apply --as system:admin -n "$NAMESPACE" -f -
+  oc start-build "$IMAGE_NAME" -n "$NAMESPACE" --follow --wait --as system:admin \
+    || die "image build failed — oc logs -f bc/$IMAGE_NAME -n $NAMESPACE"
+  info "Serving image built: $IMAGE"
+}
+
 ensure_project() {
   if ! oc get project "$NAMESPACE" >/dev/null 2>&1; then
     info "Creating project $NAMESPACE"
@@ -202,9 +241,42 @@ seed_weights() {
   done
 }
 
+# Block until KubeRay has actually created the Ray pods.
+#
+# This exists because `oc wait` does not wait for a resource to appear: when
+# the selector matches nothing it exits non-zero immediately with "no matching
+# resources found". KubeRay needs a few seconds after the RayCluster is
+# accepted before the pods exist, so waiting on them directly is a race that
+# the controller usually loses.
+wait_for_ray_pods_to_exist() {
+  local deadline msg seen=0
+  deadline=$(( $(date +%s) + 300 ))
+  while [ -z "$(oc get pods -l "ray.io/cluster=${CLUSTER_NAME}" -n "$NAMESPACE" -o name 2>/dev/null)" ]; do
+    # A rejected pod template (bad volumeMounts, missing secret, admission
+    # webhook) surfaces only as ReplicaFailure on the RayCluster — nowhere
+    # that looks like a scheduling problem. Report it rather than sitting here
+    # for 5 minutes and then blaming GPU capacity. Require two consecutive
+    # observations so a transient create failure doesn't abort the deploy.
+    msg="$(oc get raycluster "$CLUSTER_NAME" -n "$NAMESPACE" \
+      -o jsonpath='{.status.conditions[?(@.type=="ReplicaFailure")].message}' 2>/dev/null || true)"
+    if [ -n "$msg" ]; then
+      seen=$(( seen + 1 ))
+      [ "$seen" -lt 2 ] || die "KubeRay cannot create the Ray pods: $msg"
+    else
+      seen=0
+    fi
+    [ "$(date +%s)" -lt "$deadline" ] || die \
+      "KubeRay created no pods for RayCluster $CLUSTER_NAME within 5m — oc describe raycluster $CLUSTER_NAME -n $NAMESPACE"
+    sleep 5
+  done
+}
+
 # Block until the Ray head pod is Ready, which (because of the vLLM sidecar's
 # startupProbe) means the TP group formed and the model finished loading.
 wait_for_serving() {
+  info "Waiting for KubeRay to create the Ray pods..."
+  wait_for_ray_pods_to_exist
+
   info "Waiting for the Ray pods to be scheduled..."
   oc wait --for=condition=PodScheduled pod \
     -l "ray.io/cluster=${CLUSTER_NAME}" -n "$NAMESPACE" --timeout=600s >/dev/null \
@@ -256,8 +328,12 @@ smoke_ray_topology() {
   fi
   pass "head pod: $HEAD"
 
+  # --as system:admin because the Ray pods run as uid 1000 under the
+  # operator's run-as-ray-user SCC, which a normal account cannot validate
+  # against: a plain `oc exec` is rejected outright. Without it this check
+  # reports "advertises ? GPUs" and looks like a broken cluster.
   local ray_gpus
-  ray_gpus="$(oc exec -n "$NAMESPACE" "$HEAD" -c ray-head -- \
+  ray_gpus="$(oc exec -n "$NAMESPACE" "$HEAD" -c ray-head --as system:admin -- \
     python3 -c 'import ray; ray.init(address="127.0.0.1:6379", log_to_driver=False); print(int(ray.cluster_resources().get("GPU", 0)))' \
     2>/dev/null | tr -d '\r')"
   if [ "${ray_gpus:-0}" -eq "$TP_SIZE" ]; then
@@ -349,5 +425,5 @@ print_ready_banner() {
   echo "  Model:       $MODEL_ID  (served as '$SERVED_NAME')"
   echo "  Parallelism: TP=$TP_SIZE over Ray — $HEAD_GPUS GPU on the head + $WORKER_REPLICAS x $WORKER_GPUS on workers"
   echo "  Context:     $MAX_MODEL_LEN tokens (Beam supports up to 1048576; raise MAX_MODEL_LEN until the KV cache no longer fits)"
-  echo "  Ray status:  oc exec -n $NAMESPACE \$(oc get pod -l ray.io/cluster=$CLUSTER_NAME,ray.io/node-type=head -n $NAMESPACE -o name) -c ray-head -- ray status"
+  echo "  Ray status:  oc exec -n $NAMESPACE \$(oc get pod -l ray.io/cluster=$CLUSTER_NAME,ray.io/node-type=head -n $NAMESPACE -o name) -c ray-head --as system:admin -- ray status"
 }

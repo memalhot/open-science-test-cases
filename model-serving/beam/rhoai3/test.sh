@@ -20,16 +20,28 @@ echo "========================================="
 
 smoke_ray_topology || { smoke_summary; exit 1; }
 
-# On 3.x nothing mutates the pod, so the head should hold exactly the two
-# containers we declared. An extra one means this is really a 2.x cluster with
-# the CodeFlare operator still injecting its sidecar — in which case
-# ../rhoai2/ is the variant you want.
+# The 3.x operator mutates the head pod too, just differently from CodeFlare:
+# its raycluster-mtls controller adds the cert volumes and RAY_TLS_* env, a
+# wait-for-tls-ip-san init container, and a kube-rbac-proxy sidecar — but no
+# oauth-proxy. Seeing one of those means this is really a 2.x cluster with the
+# CodeFlare operator injecting it, in which case ../rhoai2/ is the variant you
+# want.
 containers="$(oc get pod "$HEAD" -n "$NAMESPACE" \
   -o jsonpath='{range .spec.containers[*]}{.name}{" "}{end}' 2>/dev/null)"
 if printf '%s' "$containers" | grep -q 'oauth-proxy'; then
   fail "head pod carries an oauth-proxy sidecar (${containers}) — this looks like RHOAI 2.x; use ../rhoai2/"
 else
   pass "head containers as declared: ${containers}"
+fi
+
+# --- NetworkPolicy ---------------------------------------------------------
+echo
+echo "=== NetworkPolicy ==="
+
+if oc get networkpolicy beam-head-vllm -n "$NAMESPACE" >/dev/null 2>&1; then
+  pass "beam-head-vllm present (reopens 8000; KubeRay's head policy does not allow it)"
+else
+  fail "beam-head-vllm missing — the route to vLLM will time out"
 fi
 
 smoke_api || { smoke_summary; exit 1; }

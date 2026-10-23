@@ -1,0 +1,50 @@
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: __IMAGE_NAME__
+  labels:
+    app: beam
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: __IMAGE_NAME__
+  labels:
+    app: beam
+spec:
+  source:
+    type: Dockerfile
+    dockerfile: |
+      FROM __BASE_IMAGE__
+
+      # KubeRay injects readiness and liveness probes that shell out to
+      # wget, and the vLLM image does not ship it. Every probe then fails
+      # with `bash: line 1: wget: command not found`, and at the injected
+      # failureThreshold of 120 x 5s the kubelet kills the container almost
+      # exactly ten minutes in — on the worker that is ten minutes into the
+      # model load, every time, and on the head it would be ten minutes
+      # after it started serving.
+      RUN apt-get update \
+       && apt-get install -y --no-install-recommends wget \
+       && rm -rf /var/lib/apt/lists/* \
+       && wget --version | head -1
+
+      # ray[default] rather than plain ray: KubeRay's `ray start` and the
+      # dashboard/GCS endpoints the operator probes live in the extra.
+      #
+      # Pinned to the same RAY_VERSION the RayCluster declares as its
+      # rayVersion, so the CR and what the pods actually run cannot drift.
+      # `ray --version` then fails the build here rather than at pod start,
+      # which is the whole point of pinning it.
+      RUN pip install --no-cache-dir "ray[default]==__RAY_VERSION__" \
+       && ray --version
+  strategy:
+    type: Docker
+  output:
+    to:
+      kind: ImageStreamTag
+      name: __IMAGE_NAME__:latest
+  resources:
+    requests:
+      cpu: "2"
+      memory: 8Gi

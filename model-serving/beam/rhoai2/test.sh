@@ -66,7 +66,10 @@ sys.exit(1)
     fail "vLLM sidecar is missing RAY_TLS_* env — it cannot reach a TLS-enabled GCS"
   fi
 
-  if oc exec -n "$NAMESPACE" "$HEAD" -c vllm -- \
+  # --as system:admin: the Ray pods run under the operator's run-as-ray-user
+  # SCC, so a plain `oc exec` is rejected and this would read as a missing
+  # cert mount rather than a permissions problem.
+  if oc exec -n "$NAMESPACE" "$HEAD" -c vllm --as system:admin -- \
        sh -c 'test -r /home/ray/workspace/tls/server.crt && test -r /home/ray/workspace/tls/ca.crt' \
        >/dev/null 2>&1; then
     pass "vLLM sidecar can read the injected certificates"

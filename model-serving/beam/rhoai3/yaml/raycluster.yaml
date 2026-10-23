@@ -34,13 +34,12 @@ spec:
   # Head: Ray GCS + 4 TP ranks + the vLLM driver/API server
   # ---------------------------------------------------------------------------
   headGroupSpec:
-    rayStartParams:
-      # Declared explicitly rather than autodetected so that the number Ray
-      # advertises always matches the GPU limit below — if these ever disagree,
-      # vLLM's placement group either over-subscribes devices or hangs forever
-      # waiting for ranks that cannot be placed.
-      num-gpus: "__HEAD_GPUS__"
-      dashboard-host: "0.0.0.0"
+    # Empty on purpose. KubeRay only turns rayStartParams into a generated
+    # `ray start` when the container has no command of its own, and this head
+    # container does (see below) — so anything listed here would be silently
+    # ignored. The real flags are in the container's args, which is also the
+    # only place they can be kept in step with the GPU limit.
+    rayStartParams: {}
     template:
       metadata:
         labels:
@@ -51,69 +50,50 @@ spec:
             operator: Exists
             effect: NoSchedule
         containers:
-          # The Ray container MUST be index 0 — KubeRay injects its generated
-          # `ray start --head ... --block` command into that container, and we
-          # deliberately leave `command` unset so it can.
+          # One container runs BOTH the Ray head and the vLLM server.
+          #
+          # WHY NOT A SEPARATE DRIVER SIDECAR
+          # vLLM decides which platform it is on by calling
+          # nvmlDeviceGetCount(), so whichever process builds the engine
+          # config has to be able to see a GPU. A container with no
+          # nvidia.com/gpu allocation does not merely see zero devices — the
+          # GPU operator does not mount the NVML library into it at all, and
+          # NVIDIA_VISIBLE_DEVICES=all is refused for unprivileged pods. A
+          # GPU-less driver sidecar therefore dies at config time with
+          #   RuntimeError: Failed to infer device type
+          # no matter how little compute it intends to do itself.
+          #
+          # Serving from the container that already holds the head's GPUs is
+          # also the upstream multi-node recipe: `ray start` on every node,
+          # then `vllm serve` on the head one. The GCS stays on loopback.
           - name: ray-head
-            image: __IMAGE__
-            env:
-              # OpenShift runs the pod as a random UID with HOME=/ (not
-              # writable). torch/flashinfer write JIT and kernel caches under
-              # ~/.cache, so an unwritable HOME crashes the ranks at startup with
-              #   PermissionError: [Errno 13] Permission denied: '/.cache'
-              - name: HOME
-                value: "/home/ray"
-              # Share vLLM's torch.compile cache across BOTH nodes on the RWX
-              # PVC. Compiling Beam's 52-layer MoE graph is slow; with the cache
-              # on shared storage the second node's ranks hit it instead of
-              # repeating the work, and restarts become warm.
-              - name: VLLM_CACHE_ROOT
-                value: "/models/.vllm-cache"
-              - name: HF_HOME
-                value: "/models/.hf-home"
-              # No RDMA device plugin is exposed on this cluster, so NCCL must
-              # not try to probe InfiniBand — left enabled it spends a long time
-              # failing over before falling back to TCP sockets.
-              - name: NCCL_IB_DISABLE
-                value: "__NCCL_IB_DISABLE__"
-              - name: NCCL_SOCKET_IFNAME
-                value: "__NCCL_SOCKET_IFNAME__"
-              - name: GLOO_SOCKET_IFNAME
-                value: "__NCCL_SOCKET_IFNAME__"
-              - name: NCCL_DEBUG
-                value: "WARN"
-            ports:
-              - { containerPort: 6379,  name: gcs }
-              - { containerPort: 8265,  name: dashboard }
-              - { containerPort: 10001, name: client }
-            resources:
-              requests:
-                cpu: "16"
-                memory: 128Gi
-              limits:
-                nvidia.com/gpu: "__HEAD_GPUS__"
-                memory: 256Gi
-            volumeMounts:
-              - { name: weights, mountPath: /models }
-              - { name: ray-home, mountPath: /home/ray }
-              # Ray's object store and NCCL both live in shared memory; the
-              # container default of 64MB is far too small and Ray will warn and
-              # then perform terribly.
-              - { name: shm, mountPath: /dev/shm }
-
-          - name: vllm
             image: __IMAGE__
             command: ["/bin/sh", "-c"]
             args:
               - |
                 set -eu
 
-                # Ray's GCS is in the sibling container and the worker pod still
-                # has to join, so the driver must not start vLLM until the full
-                # TP group's worth of GPUs is actually registered. Starting
-                # early is not benign: vLLM builds its placement group from
-                # whatever is available at that instant and then blocks forever
-                # on ranks that never arrive.
+                # KubeRay generates `ray start` only for a container with no
+                # command, so supplying one means we own the whole invocation.
+                # These ports are not free choices: the operator's injected
+                # readiness/liveness probes poll 52365 and 8265, and the head
+                # Service routes 6379/8265/10001 by number.
+                ulimit -n 65536
+                ray start --head \
+                  --port=6379 \
+                  --dashboard-host=0.0.0.0 \
+                  --dashboard-agent-listen-port=52365 \
+                  --metrics-export-port=8080 \
+                  --num-cpus=16 \
+                  --num-gpus=__HEAD_GPUS__
+
+                # Deliberately no --block: ray start returns once the daemons
+                # are up, and vLLM below becomes the container's main process.
+
+                # The worker pod still has to join before the TP group can be
+                # formed. Starting vLLM early is not benign — it builds its
+                # placement group from whatever is registered at that instant
+                # and then blocks forever on ranks that never arrive.
                 echo "Waiting for Ray to register __TP_SIZE__ GPUs..."
                 python3 - <<'PYWAIT'
                 import os, sys, time
@@ -151,6 +131,8 @@ spec:
                   --served-model-name=__SERVED_NAME__ \
                   --tensor-parallel-size=__TP_SIZE__ \
                   --distributed-executor-backend=ray \
+                  --cpu-distributed-timeout-seconds=__DIST_TIMEOUT_S__ \
+                  --distributed-timeout-seconds=__DIST_TIMEOUT_S__ \
                   --max-model-len=__MAX_MODEL_LEN__ \
                   --gpu-memory-utilization=__GPU_MEM_UTIL__ \
                   --enable-auto-tool-choice \
@@ -164,30 +146,78 @@ spec:
                 value: "127.0.0.1:6379"
               - name: TP_SIZE
                 value: "__TP_SIZE__"
-              - name: HOME
-                value: "/home/ray"
-              - name: VLLM_CACHE_ROOT
-                value: "/models/.vllm-cache"
-              - name: HF_HOME
-                value: "/models/.hf-home"
+              # THREAD BUDGET — do not drop these on a many-core node.
+              # These GPU nodes have 512 CPUs and the container is capped at
+              # ~4096 threads (OpenShift's podPidsLimit; note the container's
+              # own cgroup pids.max reads "max", so the ceiling is invisible
+              # from inside). Both OpenMP and Ray's gRPC pools size themselves
+              # from the host CPU count, and this container hosts the vLLM
+              # server plus __HEAD_GPUS__ TP rank actors — at 512 threads per
+              # torch process that is thousands of threads before any work
+              # happens. Exceeding the cap does not degrade gracefully; the
+              # Ray core worker aborts with
+              #   Unhandled exception ... thread: Resource temporarily
+              #   unavailable [system:11]
+              # which looks like a Ray bug rather than a limit.
+              - name: OMP_NUM_THREADS
+                value: "8"
+              - name: RAY_num_server_call_thread
+                value: "8"
+              # PyTorch symmetric memory assumes every rank can reach the
+              # others over NVLink/P2P, which is false for a TP group split
+              # across two nodes. vLLM's SymmMemCommunicator checks device
+              # capability and world size but NOT how many nodes the group
+              # spans (unlike CustomAllreduce and FlashInferAllReduce, which
+              # both self-disable on multi-node), so on H100 at TP=8 it goes
+              # ahead and calls torch_symm_mem.rendezvous() — which never
+              # returns here. Its try/except only catches RuntimeError, and a
+              # hang raises nothing, so the ranks sit in
+              #   rendezvous (torch/distributed/_symmetric_memory/...)
+              # until whichever timeout is shortest kills the pod, blaming
+              # gloo or the startup probe rather than this.
+              - name: VLLM_ALLREDUCE_USE_SYMM_MEM
+                value: "0"
               # Loading 294GB across a TCP-backed TP group is slow, and the
               # NVFP4 path additionally autotunes kernels on first boot. The
               # default engine-ready timeout trips long before that finishes.
               - name: VLLM_ENGINE_READY_TIMEOUT_S
                 value: "3600"
+              # OpenShift runs the pod as a random UID with HOME=/ (not
+              # writable). torch/flashinfer write JIT and kernel caches under
+              # ~/.cache, so an unwritable HOME crashes the ranks at startup with
+              #   PermissionError: [Errno 13] Permission denied: '/.cache'
+              - name: HOME
+                value: "/home/ray"
+              # Share vLLM's torch.compile cache across BOTH nodes on the RWX
+              # PVC. Compiling Beam's 52-layer MoE graph is slow; with the cache
+              # on shared storage the second node's ranks hit it instead of
+              # repeating the work, and restarts become warm.
+              - name: VLLM_CACHE_ROOT
+                value: "/models/.vllm-cache"
+              - name: HF_HOME
+                value: "/models/.hf-home"
+              # No RDMA device plugin is exposed on this cluster, so NCCL must
+              # not try to probe InfiniBand — left enabled it spends a long time
+              # failing over before falling back to TCP sockets.
               - name: NCCL_IB_DISABLE
                 value: "__NCCL_IB_DISABLE__"
               - name: NCCL_SOCKET_IFNAME
                 value: "__NCCL_SOCKET_IFNAME__"
               - name: GLOO_SOCKET_IFNAME
                 value: "__NCCL_SOCKET_IFNAME__"
+              - name: NCCL_DEBUG
+                value: "WARN"
             ports:
-              - { containerPort: 8000, name: http }
+              - { containerPort: 6379,  name: gcs }
+              - { containerPort: 8265,  name: dashboard }
+              - { containerPort: 10001, name: client }
+              - { containerPort: 8000,  name: http }
             # Model load here is tens of minutes, not seconds. A startupProbe
-            # (not a long readinessProbe) is the right tool: it suppresses the
-            # readiness check entirely until vLLM answers, then hands over to a
-            # tight readinessProbe that will pull the pod out of the Service
-            # promptly if the engine later dies.
+            # is the right tool: until it passes, kubelet suppresses both the
+            # readiness probe below AND the liveness probe KubeRay injects, so
+            # a slow load cannot be mistaken for a hung raylet and restarted.
+            # Once it passes, Ready on this pod means "serving", which is what
+            # up.sh waits for.
             startupProbe:
               httpGet: { path: /health, port: 8000 }
               periodSeconds: 15
@@ -196,16 +226,27 @@ spec:
               httpGet: { path: /health, port: 8000 }
               periodSeconds: 10
               failureThreshold: 3
+            # No livenessProbe: KubeRay injects a raylet + GCS healthz one,
+            # which is the right liveness signal for this container now that
+            # readiness tracks vLLM instead.
             resources:
+              # The head's old two containers asked for 16+8 CPU and
+              # 128+32Gi / 256+64Gi; keep the pod's totals the same so this
+              # still schedules exactly where it used to.
               requests:
-                cpu: "8"
-                memory: 32Gi
+                cpu: "24"
+                memory: 160Gi
               limits:
-                memory: 64Gi
+                nvidia.com/gpu: "__HEAD_GPUS__"
+                memory: 320Gi
             volumeMounts:
               - { name: weights, mountPath: /models }
               - { name: ray-home, mountPath: /home/ray }
+              # Ray's object store and NCCL both live in shared memory; the
+              # container default of 64MB is far too small and Ray will warn and
+              # then perform terribly.
               - { name: shm, mountPath: /dev/shm }
+              - { name: ray-tmp, mountPath: /tmp/ray }
         volumes:
           - name: weights
             persistentVolumeClaim:
@@ -216,6 +257,11 @@ spec:
             emptyDir:
               medium: Memory
               sizeLimit: 64Gi
+          # Ray's session directory: logs, the session state and any object
+          # spill. On an emptyDir rather than the container's writable layer,
+          # which is backed by the node's root filesystem and much smaller.
+          - name: ray-tmp
+            emptyDir: {}
 
   # ---------------------------------------------------------------------------
   # Workers: the remaining TP ranks, one pod per extra GPU node
@@ -237,18 +283,28 @@ spec:
               operator: Exists
               effect: NoSchedule
           containers:
-            # As with the head, index 0 and left command-less so KubeRay can
-            # inject `ray start --address=... --block`.
+            # Index 0 and left command-less so KubeRay can inject
+            # `ray start --address=... --block`. Unlike the head, nothing else
+            # runs in here, so there is no reason to take the command over.
             - name: ray-worker
               image: __IMAGE__
               env:
                 # Same reasoning as the head container — these ranks load
                 # weights and compile kernels, so they need the identical
-                # writable HOME, shared compile cache and NCCL transport
-                # settings. Divergence here shows up as half the TP group
-                # recompiling, or failing to connect.
+                # writable HOME, shared compile cache, NCCL transport settings
+                # and thread budget. Divergence here shows up as half the TP
+                # group recompiling, or failing to connect.
                 - name: HOME
                   value: "/home/ray"
+                - name: OMP_NUM_THREADS
+                  value: "8"
+                - name: RAY_num_server_call_thread
+                  value: "8"
+                # Must match the head — see the head container's comment. The
+                # ranks on this node take part in the same rendezvous, so
+                # leaving it enabled here alone would hang just the same.
+                - name: VLLM_ALLREDUCE_USE_SYMM_MEM
+                  value: "0"
                 - name: VLLM_CACHE_ROOT
                   value: "/models/.vllm-cache"
                 - name: HF_HOME

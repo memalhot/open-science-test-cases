@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tear down the Beam serving stack (RHOAI 3.x variant).
 #
-#   ./down.sh               # delete the RayCluster, route, service and seed Job
+#   ./down.sh               # delete the RayCluster, NetworkPolicy, route, service, seed Job
 #   ./down.sh --weights     # also delete the 294GB weight PVC
 #
 # The weight PVC is kept by default on purpose: re-seeding it is a 294GB
@@ -26,6 +26,7 @@ del() {
 
 del route beam-infer
 del service beam-external
+del networkpolicy beam-head-vllm
 del raycluster "$CLUSTER_NAME"
 del job beam-seed
 

@@ -1,8 +1,9 @@
-# Reopen port 8000 on the Ray head pod — RHOAI 2.x only.
+# Reopen port 8000 on the Ray head pod. Needed on both RHOAI generations.
 #
-# On 2.x the CodeFlare controller installs its own NetworkPolicy over the head
-# pod (desiredHeadNetworkPolicy in raycluster_controller.go). That policy
-# admits:
+# Something always installs a NetworkPolicy over the head pod: on 2.x it is the
+# CodeFlare controller (desiredHeadNetworkPolicy in raycluster_controller.go),
+# on 3.x the KubeRay operator's own networkpolicy-controller. Both admit
+# roughly:
 #
 #   * any port, from pods labelled ray.io/cluster=<name>   (the Ray workers)
 #   * 10001 and 8265, from any pod in the same namespace
@@ -10,14 +11,14 @@
 #   * 8080, from openshift-monitoring
 #   * 8443 (+10001 under mTLS), from anywhere
 #
-# Port 8000 — where our vLLM sidecar serves the OpenAI API — is on none of
-# those lists. Since a pod selected by any NetworkPolicy denies everything not
+# Port 8000 — where our vLLM sidecar serves the OpenAI API — is on neither
+# list. Since a pod selected by any NetworkPolicy denies everything not
 # explicitly allowed, the OpenShift router (which lives outside the namespace)
 # cannot reach vLLM, and the route times out with no useful error anywhere.
+# Worse, it fails that way only at the very end, after a 40-minute model load.
 #
-# NetworkPolicies are additive, so rather than fighting the CodeFlare-owned
-# policy we add a second one that allows 8000. The rhoai3 variant needs no
-# equivalent: KubeRay there does not install a head NetworkPolicy.
+# NetworkPolicies are additive, so rather than fighting the operator-owned
+# policy we add a second one that allows 8000.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -32,11 +33,6 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # No `from`: the ingress router runs in openshift-ingress and is reached
-    # via the host network, so a namespaceSelector for it is unreliable across
-    # cluster topologies. Scoping to the single port keeps this narrow — the
-    # dashboard (8265) and Ray client (10001) stay governed by CodeFlare's
-    # policy, and 6379 is still only reachable from the Ray pods themselves.
     - ports:
         - protocol: TCP
           port: 8000

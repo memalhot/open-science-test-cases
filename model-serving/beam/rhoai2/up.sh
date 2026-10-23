@@ -2,9 +2,10 @@
 # Stand up Beam 1.0 on vLLM, tensor-parallel across both GPU nodes via Ray.
 # RHOAI 2.25 variant — see ../rhoai3/up.sh for the 3.x one.
 #
-#   ./up.sh                 # PVC -> seed weights -> RayCluster -> NetworkPolicy -> route
-#   ./up.sh --no-wait       # apply everything and return immediately
-#   ./up.sh --skip-seed     # weights are already on the PVC; go straight to serving
+#   ./up.sh                   # image -> PVC -> seed -> RayCluster -> NetworkPolicy -> route
+#   ./up.sh --no-wait         # apply everything and return immediately
+#   ./up.sh --skip-seed       # weights are already on the PVC; go straight to serving
+#   ./up.sh --rebuild-image   # rebuild the serving image even if it exists
 #
 # Config comes from ../common/config.conf (env vars of the same name win).
 VARIANT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,11 +14,13 @@ load_config
 
 WAIT=1
 SKIP_SEED=0
+REBUILD_IMAGE=0
 for arg in "$@"; do
   case "$arg" in
-    --no-wait)   WAIT=0 ;;
-    --skip-seed) SKIP_SEED=1 ;;
-    *) die "unknown argument: $arg (expected --no-wait or --skip-seed)" ;;
+    --no-wait)       WAIT=0 ;;
+    --skip-seed)     SKIP_SEED=1 ;;
+    --rebuild-image) REBUILD_IMAGE=1 ;;
+    *) die "unknown argument: $arg (expected --no-wait, --skip-seed or --rebuild-image)" ;;
   esac
 done
 
@@ -50,6 +53,7 @@ else
 fi
 
 ensure_project
+ensure_serving_image "$REBUILD_IMAGE"
 ensure_hf_secret
 ensure_weights_pvc
 
