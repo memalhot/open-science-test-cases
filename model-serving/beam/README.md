@@ -46,23 +46,34 @@ group has to span two nodes. vLLM's cross-node executor is Ray, hence the
          node A                              node B
   ┌─────────────────────────┐        ┌─────────────────────────┐
   │ Ray head pod            │        │ Ray worker pod          │
-  │  ├ ray-head   4x H100   │◄──────►│  └ ray-worker  4x H100  │
-  │  │            ranks 0-3 │  NCCL  │               ranks 4-7 │
-  │  └ vllm       0 GPUs    │        │                         │
-  │    driver + OpenAI API  │        │                         │
+  │  └ ray-head   4x H100   │◄──────►│  └ ray-worker  4x H100  │
+  │    ranks 0-3            │  NCCL  │               ranks 4-7 │
+  │    + vLLM OpenAI API    │        │                         │
   └───────────▲─────────────┘        └─────────────────────────┘
               │ :8000
     Service beam-external -> Route beam-infer
 
   both pods mount the same RWX PVC (beam-weights) at /models
+  on rhoai3 the head also carries an operator-injected kube-rbac-proxy
   on rhoai2 the head also carries a CodeFlare-injected oauth-proxy container
 ```
 
-The vLLM driver is a **sidecar in the head pod**, not a separate Deployment:
-it reaches the Ray GCS over loopback and shares the head's lifecycle. It
-requests no GPU of its own — in vLLM V1 the Ray executor places all eight TP
-ranks as actors inside the placement group, and the driver process never
-touches a device.
+The Ray head container runs the vLLM server **itself** rather than beside it,
+which is also the upstream multi-node recipe: `ray start` on every node, then
+`vllm serve` on the head one. The container keeps no `command` of its own by
+accident — supplying one means KubeRay stops generating `ray start`, so the
+manifest owns the whole invocation and `rayStartParams` is deliberately `{}`.
+
+This is worth stating plainly because the obvious alternative does not work.
+A separate GPU-less driver sidecar — which is what this deployment originally
+used — cannot start at all: vLLM selects its platform by calling
+`nvmlDeviceGetCount()`, and a container with no `nvidia.com/gpu` allocation
+never gets the NVML library mounted, so it dies in config with
+`RuntimeError: Failed to infer device type`. Setting
+`NVIDIA_VISIBLE_DEVICES=all` does not help; the GPU operator refuses that
+envvar for unprivileged pods. The driver genuinely needs to live where the
+GPUs are, even though in vLLM V1 the Ray executor places all eight TP ranks as
+actors and the driver process itself never computes on a device.
 
 The two pods land on different nodes without any anti-affinity rule, simply
 because each requests 4 GPUs and each node has exactly 4 allocatable.
@@ -74,28 +85,30 @@ exists on 2.x and not on 3.x.
 
 | | rhoai3 | rhoai2 (2.25) |
 | --- | --- | --- |
-| Ray operator | KubeRay, no admission mutation | KubeRay + CodeFlare mutating webhook |
-| mTLS between Ray nodes | off | **on by default**, certs via an injected `create-cert` init container |
-| Dashboard auth | none added | `oauth-proxy` sidecar on :8443; head SA forced to `beam-oauth-proxy` |
-| NetworkPolicies | none | CodeFlare installs head + worker policies |
-| Extra manifest | — | `yaml/networkpolicy.yaml` |
+| Ray operator | KubeRay, mutates the CR itself | KubeRay + CodeFlare mutating webhook |
+| mTLS between Ray nodes | **on**, certs via cert-manager and a `wait-for-tls-ip-san` init container | **on by default**, certs via an injected `create-cert` init container |
+| Dashboard auth | `kube-rbac-proxy` sidecar | `oauth-proxy` sidecar on :8443; head SA forced to `beam-oauth-proxy` |
+| NetworkPolicies | KubeRay's networkpolicy-controller installs head + worker policies | CodeFlare installs head + worker policies |
+| Extra manifest | `common/yaml/networkpolicy.yaml` | same |
 | Admission | direct | usually Kueue-gated (`LOCAL_QUEUE`) |
 
-Three of these actively break a naive port-8000 sidecar deployment, and the
-rhoai2 variant exists to handle them:
+**1. The mTLS injection only touches `Containers[0]`.** The webhook writes
+`RAY_USE_TLS`, `RAY_TLS_SERVER_CERT/KEY/CA_CERT` and the `ca-vol` /
+`server-cert` mounts into the first container *only*. This used to require
+copying all of it by hand onto the sidecar; now that vLLM serves from
+`Containers[0]` itself, the injection lands on the serving process and the
+manifest declares none of it. `rhoai2/test.sh` still asserts the env and certs
+are present, precisely so that moving the server back out of container 0 fails
+loudly instead of silently losing its credentials.
 
-**1. The mTLS injection skips sidecars.** The webhook writes `RAY_USE_TLS`,
-`RAY_TLS_SERVER_CERT/KEY/CA_CERT` and the `ca-vol` / `server-cert` mounts into
-`Containers[0]` *only*. Our vLLM driver is `Containers[1]`, so it gets neither
-the env nor the certs and cannot speak to a TLS-enabled GCS. `rhoai2/yaml/raycluster.yaml`
-therefore sets both by hand, copying the webhook's own values verbatim.
-
-**2. The head NetworkPolicy does not allow port 8000.** CodeFlare's policy
-admits any port from the Ray workers, 8265/10001 from in-namespace pods and
-the operator, 8080 from monitoring, and 8443 from anywhere. Port 8000 is on
-none of those lists, and a pod selected by any policy denies what isn't
-explicitly allowed — so the router cannot reach vLLM and the route just times
-out. `rhoai2/yaml/networkpolicy.yaml` adds a second, additive policy for 8000.
+**2. The head NetworkPolicy does not allow port 8000 — on either generation.**
+This is not CodeFlare-specific: on 3.x the KubeRay operator's own
+networkpolicy-controller installs an equivalent `beam-head` policy admitting
+only 10001, 8265 and 8443. Any port is allowed from pods labelled
+`ray.io/cluster=beam`, so Ray itself is fine, but a pod selected by any policy
+denies what isn't explicitly allowed — so the router cannot reach vLLM and the
+route just times out, *after* a full model load. `common/yaml/networkpolicy.yaml`
+adds a second, additive policy for 8000 and both variants apply it.
 
 **3. The head service account is overwritten.** The webhook replaces
 `serviceAccountName` with `beam-oauth-proxy` and its validating webhook then
@@ -113,6 +126,66 @@ python3 check-codeflare-mutation.py /tmp/rc.yaml     # needs PyYAML
 That proves the manifest and the webhook agree about container ordering,
 volume names, env, and mount paths. It does not prove the cluster behaves as
 documented — see *Status* below.
+
+## The serving image is built, not pulled
+
+`up.sh` builds the image in-cluster before deploying anything, and the pods run
+the result rather than `BASE_IMAGE`:
+
+```
+BASE_IMAGE  docker.io/vllm/vllm-openai:reflection-beam
+     │
+     ├─ pip install ray[default]==$RAY_VERSION
+     └─ apt-get install wget
+     ▼
+IMAGE       image-registry.openshift-image-registry.svc:5000/$NAMESPACE/vllm-beam-ray:latest
+```
+
+Both additions are load-bearing:
+
+- **Ray is absent from the base image.** Not missing from `PATH` — `find / -name ray`
+  returns nothing. KubeRay's injected `ray start` exits 127 and the head
+  crashloops immediately.
+- **`wget` is absent, and KubeRay's injected probes shell out to it.** Every
+  readiness and liveness probe fails with `wget: command not found`, and at the
+  injected `failureThreshold: 120 × 5s` the kubelet kills the container at
+  almost exactly ten minutes — on the worker that lands mid-load, every time.
+
+The build runs in-cluster (`common/yaml/buildconfig.yaml`) so the ~25GB base is
+pulled by the cluster rather than down to a workstation and back. It is skipped
+when the ImageStream tag already exists; force it with `./up.sh --rebuild-image`.
+Setting `IMAGE` explicitly bypasses the build entirely.
+
+`RAY_VERSION` is therefore load-bearing rather than informational: the same
+value pins the `pip install` and the RayCluster's `rayVersion`, and the build
+runs `ray --version` so a mismatch fails there rather than at pod start.
+
+## Settings a two-node TP group cannot do without
+
+These are defaults that are correct on a single NVLink node and wrong here.
+Each one fails as a hang or an unrelated-looking crash, never as a clear error.
+
+| Setting | Default | Why it has to change |
+| --- | --- | --- |
+| `VLLM_ALLREDUCE_USE_SYMM_MEM=0` | on | PyTorch symmetric memory assumes every rank reaches the others over NVLink/P2P. vLLM's `SymmMemCommunicator` checks device capability and world size but **not node count**, unlike `CustomAllreduce` and `FlashInferAllReduce` which both self-disable on multi-node. At TP=8 on H100 it calls `torch_symm_mem.rendezvous()` and never returns. |
+| `OMP_NUM_THREADS=8`, `RAY_num_server_call_thread=8` | sized from host CPU count | These nodes have **512 CPUs** and containers cap at ~4096 threads. The cap is invisible from inside — the container's own `pids.max` reads `max`. |
+| `DIST_TIMEOUT_S=3600` | gloo 1800s, NCCL 600s | 294GB off a shared NFS PVC over TCP does not fit in either. Surfaces as `RuntimeError: Application timeout caused pair closure` — a gloo error, despite NCCL being the GPU backend. |
+
+The symmetric-memory one is the most expensive to diagnose, because the hang
+raises nothing: `SymmMemCommunicator` wraps the rendezvous in `except
+RuntimeError`, which a hang never triggers. Whichever timeout is shortest fires
+first and takes the blame — the gloo timeout at 30 minutes, or the head's
+startupProbe at 80. A `py-spy dump` on a rank actor is what actually identifies
+it:
+
+```bash
+oc exec -n mm-test <worker-pod> -c ray-worker --as system:admin -- \
+  py-spy dump --pid <rank-pid>
+```
+
+It must be set on **every container where ranks run**, not just where the
+server runs. The TP ranks are Ray actors spawned by the raylet, so they inherit
+the Ray container's environment.
 
 ## Configuration
 
@@ -186,11 +259,22 @@ The weight PVC deliberately survives `down.sh`:
 ```
 
 Model load is the slow part of every start: 294GB off NFS, sharded across a
-TCP-backed TP group, plus NVFP4 kernel autotuning on first boot. The vLLM
+TCP-backed TP group, plus NVFP4 kernel autotuning on first boot. The head
 container uses a `startupProbe` with an 80-minute budget rather than a long
 `readinessProbe`, so that once it *is* up a failing engine is pulled out of the
 Service within 30 seconds. `VLLM_ENGINE_READY_TIMEOUT_S=3600` is set for the
 same reason — the default trips long before the model is ready.
+
+The startupProbe earns its keep twice over: until it passes, the kubelet also
+suppresses the liveness probe KubeRay injects, so a slow load cannot be
+mistaken for a hung raylet and restarted. That is why the head declares no
+`livenessProbe` of its own — KubeRay's raylet + GCS healthz check is the right
+liveness signal once readiness tracks vLLM instead.
+
+Measured on RHOAI 3.5.2 with warm weights, the 53 shards load in about **five
+minutes** (~5.6s/shard). The 80-minute and 3600s budgets therefore have a lot
+of headroom; they are sized for a cold, contended first run. If you would
+rather genuine hangs surfaced quickly, these are the numbers to lower.
 
 `VLLM_CACHE_ROOT` points at the shared RWX PVC, so the torch.compile artifacts
 for Beam's 52-layer MoE graph are written once and reused by the second node
@@ -203,12 +287,20 @@ and by every later restart.
 ```
 
 Checks what is specific to this topology — that Ray advertises exactly
-`TP_SIZE` GPUs, that the pods really did span two nodes, that the route
-answers, and that one completion returns a correct answer. The shared
-assertions live in `common/lib.sh`; each variant adds its own. `rhoai2/test.sh`
-additionally verifies the oauth-proxy and `create-cert` injections happened,
-that the **vLLM sidecar** carries the `RAY_TLS_*` env and can actually read the
-certificates, and that `beam-head-vllm` exists.
+`TP_SIZE` GPUs, that the pods really did span two nodes, that `beam-head-vllm`
+exists, that the route answers, and that one completion returns a correct
+answer. The shared assertions live in `common/lib.sh`; each variant adds its
+own. `rhoai2/test.sh` additionally verifies the oauth-proxy and `create-cert`
+injections happened and that the serving container carries the `RAY_TLS_*` env
+and can read the certificates.
+
+The `oc exec` assertions impersonate `system:admin`. The Ray pods run as uid
+1000 under the operator's `run-as-ray-user` SCC, which an ordinary account
+cannot validate against, so a plain `oc exec` is rejected outright — and the
+check would then report a broken cluster rather than a permissions problem.
+Expect a current login too: `oc` returning `Unauthorized` makes the head-pod
+lookup come back empty, which reads as *"no Ray head pod found (is the cluster
+up?)"*.
 
 For model behaviour (Harmony channels, the five reasoning-effort levels, tool
 calling, structured output, long-context retrieval, error handling):
@@ -233,21 +325,66 @@ BASE_URL=https://openrouter.ai/api API_KEY=sk-... \
 | --- | --- | --- |
 | Manifests pass `oc apply --dry-run=server` | yes (on RHOAI 3.5.2) | yes (RayCluster CRD is generation-independent) |
 | CodeFlare mutation checked | n/a | statically, via `check-codeflare-mutation.py` (22 assertions) |
-| Deployed against real weights | **no** | **no** |
+| Deployed against real weights | **yes** — RHOAI 3.5.2, 2026-10-23 | **no** |
+| `./test.sh` | **9/9 passing** | not run |
 
-Neither variant has been run with the 294GB seed. The rhoai2 variant has the
-larger unknown: its CodeFlare interaction is modelled from the operator source
-rather than observed, so treat the first run on a real 2.25 cluster as the
-actual test.
+**rhoai3 is verified end to end**: 294GB seeded, TP=8 formed across two nodes,
+`/health` 200, `/v1/models` listing `beam`, and a correct chat completion over
+the route. `ray status` reports `8.0/8.0 GPU` in the placement group.
+
+**rhoai2 is unverified.** It carries the same design and all the same fixes,
+but no part of it has run on a 2.x cluster. Its CodeFlare interaction is still
+modelled from the operator source rather than observed, and three things in
+particular are untested: whether the validating webhook accepts a head
+container with a user-supplied `command`, whether `create-cert` and
+`oauth-proxy` still inject correctly alongside it, and whether 2.x KubeRay
+injects probes the same way the `wget` fix assumes. Treat the first run on a
+real 2.25 cluster as the actual test.
 
 ## Troubleshooting
 
 **Head pod never becomes Ready.** The startupProbe is waiting on vLLM. Watch
-the driver:
+the serving container:
 
 ```bash
 oc logs -f $(oc get pod -l ray.io/cluster=beam,ray.io/node-type=head -n mm-test -o name) \
-  -c vllm -n mm-test
+  -c ray-head -n mm-test
+```
+
+If the log goes quiet right after `Creating a new placement group` and no
+`Loading safetensors checkpoint shards` line ever appears, it is hung rather
+than slow — check `VLLM_ALLREDUCE_USE_SYMM_MEM=0` is set on head *and* worker,
+and confirm with a `py-spy dump` (see *Settings a two-node TP group cannot do
+without*). GPUs sitting at ~1.1 GiB used and 0% utilisation is the same
+symptom seen from the other side:
+
+```bash
+oc exec -n mm-test <worker-pod> -c ray-worker --as system:admin -- \
+  nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv
+```
+
+**Pods restart on a regular cadence.** Note the interval — it usually names the
+timer. Almost exactly 10 minutes is KubeRay's injected liveness probe
+(`failureThreshold: 120 × 5s`), normally because `wget` is missing from the
+image. Almost exactly 80 minutes is the head's startupProbe budget expiring,
+meaning the load genuinely did not finish. 30 minutes is the gloo default
+timeout if `DIST_TIMEOUT_S` is not applied.
+
+**`Unhandled exception ... thread: Resource temporarily unavailable
+[system:11]` and SIGABRT.** The ~4096-thread container cap, not a Ray bug.
+Confirm `OMP_NUM_THREADS` and `RAY_num_server_call_thread` are set. The ceiling
+is not visible as `pids.max`; measure it instead by spawning threads until
+`can't start new thread`.
+
+**`up.sh` says "Ray pods never scheduled" seconds after applying.** If the pods
+do exist, this is the stale form of the race `wait_for_ray_pods_to_exist()`
+now handles — `oc wait` exits immediately when its selector matches nothing
+yet. If they genuinely do not exist, the RayCluster's `ReplicaFailure`
+condition carries the reason, which is usually a rejected pod template:
+
+```bash
+oc get raycluster beam -n mm-test \
+  -o jsonpath='{.status.conditions[?(@.type=="ReplicaFailure")].message}'
 ```
 
 **Stuck at "N/8 GPUs registered".** The worker pod hasn't joined. Either it's
@@ -255,19 +392,20 @@ unschedulable (`oc get pods -l ray.io/cluster=beam`), the second GPU node is
 occupied, or — on 2.x — Kueue hasn't admitted the cluster (`oc get workloads`).
 The driver waits 30 minutes before giving up.
 
-**rhoai2: route times out but the pod is Ready.** Almost certainly the
-NetworkPolicy. Check `oc get networkpolicy -n mm-test` for `beam-head-vllm`.
+**Route times out but the pod is Ready.** Almost certainly the NetworkPolicy,
+on either generation. Check `oc get networkpolicy -n mm-test` for
+`beam-head-vllm`.
 
-**rhoai2: driver exits during the certificate check.** The `create-cert` init
-container didn't produce `/home/ray/workspace/tls/*`, or mTLS is off and the
-by-hand `RAY_USE_TLS=1` is now wrong for the cluster. `./test.sh` distinguishes
-these.
+**rhoai2: container exits during the certificate check.** The `create-cert`
+init container didn't produce `/home/ray/workspace/tls/*`, or mTLS is off on
+this cluster while the webhook still set `RAY_USE_TLS=1`. `./test.sh`
+distinguishes these.
 
 **Ray cluster state:**
 
 ```bash
 oc exec -n mm-test $(oc get pod -l ray.io/cluster=beam,ray.io/node-type=head -n mm-test -o name) \
-  -c ray-head -- ray status
+  -c ray-head --as system:admin -- ray status
 ```
 
 **OOM during KV cache allocation.** Lower `MAX_MODEL_LEN` or `GPU_MEM_UTIL`.
