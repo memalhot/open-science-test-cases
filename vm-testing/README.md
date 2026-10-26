@@ -1,6 +1,6 @@
 # VM Testing
 
-Seven test suites for OpenShift Virtualization.
+Eight test suites for OpenShift Virtualization.
 
 Does virtualization work?
 
@@ -8,6 +8,7 @@ Does virtualization work?
 - **Persistent storage** (`test-vm-storage.sh`) — a Fedora VM on a CDI-provisioned PVC, checking that guest data survives a stop/start.
 - **Live migration** (`test-vm-migration.sh`) — the same VM moved between nodes while running, checking that the guest never reboots.
 - **Disk cloning** (`test-vm-clone.sh`) — no VM at all; asks the same StorageClass to clone a disk four different ways and reports which, if any, work.
+- **GPU passthrough** ([`gpu/`](gpu/)) — handing a VM a physical H100, and measuring what it costs to move a node between serving containers and serving VMs. A separate directory because it is largely admin work, and because a GPU VM behaves differently from everything above: it cannot live migrate. **Claimed GPUs are billable whether or not the guest is doing anything** — read [`gpu/README.md`](gpu/README.md) before running any of it.
 
 What do VMs do to everything else on the cluster?
 
@@ -15,7 +16,7 @@ What do VMs do to everything else on the cluster?
 - **Memory overhead** (`test-vm-memory-overhead.sh`) — measures how much more node memory a VM reserves than its guest size, across a sweep of sizes and vCPU counts.
 - **Evictability** (`test-vm-evictability.sh`) — evicts a VM and an equivalent container pod and compares what the platform does with each.
 
-Each test deletes what it created on exit. `cleanup.sh` is there for when that did not happen — see [The cleanup script](#the-cleanup-script) at the end.
+Each test deletes what it created on exit. [`../vm-issues/cleanup.sh`](../vm-issues/cleanup.sh) is there for when that did not happen — a run killed before its trap fired, a run kept with `KEEP_VM=1`, or a disk pinned by a dead CDI worker pod. It deletes by exact name, so it is safe in a namespace that also holds real work; `--dry-run` lists without deleting. The GPU suite has its own [`gpu/cleanup.sh`](gpu/cleanup.sh).
 
 ## Prerequisites
 
@@ -28,6 +29,8 @@ oc get consoleclidownload virtctl-clidownloads-kubevirt-hyperconverged -o jsonpa
 The scripts run as the logged-in user, so what they prove is what a real project user can actually do. Creating VMs, DataVolumes and PVCs works with ordinary namespace edit rights, and so does evicting a pod (`pods/eviction` is part of `clusterrole/edit`). Two things do not: **migration** and **defining a secondary network**, each of which needs a one-time RBAC grant below.
 
 There is exactly one `--as system:admin` in the suite, in `test-vm-secondary-ipam.sh`, on a non-mutating read; see [the secondary-network RBAC section](#one-time-secondary-network-rbac) for why it is there and how to turn it off.
+
+The GPU suite in [`gpu/`](gpu/) has its own prerequisites — a node in `vm-passthrough` mode, the NVIDIA GPU Operator with `sandboxWorkloads` enabled, and cluster-admin for the one-time node setup. Its `preflight.sh` reports what is missing without changing anything; see [`gpu/README.md`](gpu/README.md).
 
 ### One-time: migration RBAC
 
@@ -154,15 +157,13 @@ Requires `oc` and `virtctl`, authenticated to the target cluster, with OpenShift
    nc -zv 127.0.0.1 2222
    ```
 
+   The `net-test-ssh` Service is created by `net-test-vm.yaml` alongside the VM. It selects the virt-launcher pod by the `kubevirt.io/vm: net-test-vm` label the VM template stamps on it, so it follows the VM across restarts.
+
 ## Cleanup
 
 ```bash
 oc delete -f net-test-vm.yaml
 ```
-
-## Notes
-
-The `net-test-ssh` Service used in step 7 is not included in this directory — create a Service selecting `kubevirt.io/vm: net-test-vm` on port 22 before running the port forward.
 
 ---
 

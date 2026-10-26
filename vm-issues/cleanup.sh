@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Removes anything the four test suites in this directory can leave behind.
+# Removes anything the four VM test suites can leave behind: networking,
+# storage and migration in ../vm-testing, and the clone test in this directory.
+# The GPU suite has its own cleanup at ../vm-testing/gpu/cleanup.sh.
 #
 # All of them clean up after themselves on exit, so this is for the cases where
 # that did not happen: a run killed with Ctrl-C before its trap fired, a run
@@ -65,8 +67,8 @@ WAIT="${WAIT:-180}"
 
 # Every object the suites create, by the name each one uses by default.
 #   test-vm.sh            self-test-vm
-#   net-test-vm.yaml      net-test-vm, and the net-test-ssh Service the README
-#                         has you create by hand for the port-forward step
+#   net-test-vm.yaml      net-test-vm, and the net-test-ssh Service it creates
+#                         alongside the VM for the port-forward step
 #   test-vm-storage.sh    pvc-test-vm + its rootdisk
 #   test-vm-migration.sh  migrate-test-vm + its rootdisk
 #   test-vm-clone.sh      the clone-test-* disks

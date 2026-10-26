@@ -11,7 +11,6 @@ model-serving/granite-model/   Deploy Granite model with vLLM on OpenShift (MinI
 inference/                     Benchmark and manual test suites for the deployed model
 fine-tuning/                   QLoRA fine-tuning via Kubeflow PyTorchJob
 endpoints/open-webui/          Open WebUI deployment connecting to the model
-compliance/                    Placeholder (empty)
 ```
 
 ## Commands
