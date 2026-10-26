@@ -40,13 +40,15 @@ spec:
   rayVersion: "__RAY_VERSION__"
 
   # ---------------------------------------------------------------------------
-  # Head: Ray GCS + 4 TP ranks + the vLLM driver/API server
+  # Head: Ray GCS + 4 TP ranks + the vLLM API server, all in one container
   # (+ an oauth-proxy container the webhook appends)
   # ---------------------------------------------------------------------------
   headGroupSpec:
-    rayStartParams:
-      num-gpus: "__HEAD_GPUS__"
-      dashboard-host: "0.0.0.0"
+    # Empty on purpose. KubeRay only turns rayStartParams into a generated
+    # `ray start` when the container has no command of its own, and this head
+    # container does (see below) — so anything listed here would be silently
+    # ignored. The real flags are in the container's args.
+    rayStartParams: {}
     template:
       metadata:
         labels:
@@ -57,56 +59,25 @@ spec:
             operator: Exists
             effect: NoSchedule
         containers:
-          # MUST stay at index 0: both KubeRay (which injects `ray start`) and
-          # the CodeFlare webhook (which injects the mTLS env and cert mounts)
-          # address this container positionally.
+          # MUST stay at index 0: the CodeFlare webhook injects the mTLS env
+          # and cert mounts into this container positionally.
+          #
+          # This one container runs the Ray head AND the vLLM server.
+          #
+          # WHY NOT A SEPARATE DRIVER SIDECAR
+          # vLLM decides which platform it is on by calling
+          # nvmlDeviceGetCount(), so whichever process builds the engine
+          # config has to be able to see a GPU. A container with no
+          # nvidia.com/gpu allocation does not merely see zero devices — the
+          # GPU operator does not mount the NVML library into it at all, and
+          # NVIDIA_VISIBLE_DEVICES=all is refused for unprivileged pods. A
+          # GPU-less driver sidecar dies at config time with
+          #   RuntimeError: Failed to infer device type
+          # however little compute it intends to do itself. Serving from the
+          # container that already holds the head's GPUs is also the upstream
+          # multi-node recipe, and it means the CodeFlare webhook's mTLS
+          # injection lands on the serving process for free.
           - name: ray-head
-            image: __IMAGE__
-            env:
-              - name: HOME
-                value: "/home/ray"
-              - name: VLLM_CACHE_ROOT
-                value: "/models/.vllm-cache"
-              - name: HF_HOME
-                value: "/models/.hf-home"
-              - name: NCCL_IB_DISABLE
-                value: "__NCCL_IB_DISABLE__"
-              - name: NCCL_SOCKET_IFNAME
-                value: "__NCCL_SOCKET_IFNAME__"
-              - name: GLOO_SOCKET_IFNAME
-                value: "__NCCL_SOCKET_IFNAME__"
-              - name: NCCL_DEBUG
-                value: "WARN"
-              # The TP ranks on this node are Ray actors spawned by the raylet
-              # in THIS container, so they inherit this env, not the vllm
-              # sidecar's. See the sidecar's comment for why symmetric memory
-              # has to be off; setting it only on the driver would miss every
-              # rank that actually takes part in the rendezvous.
-              - name: VLLM_ALLREDUCE_USE_SYMM_MEM
-                value: "0"
-              # RAY_USE_TLS / RAY_TLS_* and the ca-vol + server-cert mounts are
-              # injected here by the CodeFlare webhook. Not repeated by hand:
-              # its validating webhook treats them as immutable and rejects a
-              # spec that already carries conflicting values.
-            ports:
-              - { containerPort: 6379,  name: gcs }
-              - { containerPort: 8265,  name: dashboard }
-              - { containerPort: 10001, name: client }
-            resources:
-              requests:
-                cpu: "16"
-                memory: 128Gi
-              limits:
-                nvidia.com/gpu: "__HEAD_GPUS__"
-                memory: 256Gi
-            volumeMounts:
-              - { name: weights, mountPath: /models }
-              - { name: ray-home, mountPath: /home/ray }
-              - { name: shm, mountPath: /dev/shm }
-              # Shared with the vllm sidecar — see the volume's comment below.
-              - { name: ray-tmp, mountPath: /tmp/ray }
-
-          - name: vllm
             image: __IMAGE__
             command: ["/bin/sh", "-c"]
             args:
@@ -127,6 +98,27 @@ spec:
                   echo "  certificates present"
                 fi
 
+                # KubeRay generates `ray start` only for a container with no
+                # command, so supplying one means we own the whole invocation.
+                # These ports are not free choices: the operator's injected
+                # probes poll 52365 and 8265, and the head Service routes
+                # 6379/8265/10001 by number.
+                ulimit -n 65536
+                ray start --head \
+                  --port=6379 \
+                  --dashboard-host=0.0.0.0 \
+                  --dashboard-agent-listen-port=52365 \
+                  --metrics-export-port=8080 \
+                  --num-cpus=16 \
+                  --num-gpus=__HEAD_GPUS__
+
+                # Deliberately no --block: ray start returns once the daemons
+                # are up, and vLLM below becomes the container's main process.
+
+                # The worker pod still has to join before the TP group can be
+                # formed. Starting vLLM early is not benign — it builds its
+                # placement group from whatever is registered at that instant
+                # and then blocks forever on ranks that never arrive.
                 echo "Waiting for Ray to register __TP_SIZE__ GPUs..."
                 python3 - <<'PYWAIT'
                 import os, sys, time
@@ -147,6 +139,8 @@ spec:
                 sys.exit(1)
                 PYWAIT
 
+                # Optional flags, omitted entirely when unset in config.conf
+                # (an empty `--moe-backend` would be rejected by vLLM).
                 EXTRA=""
                 if [ -n "__MOE_BACKEND__" ]; then
                   EXTRA="${EXTRA} --moe-backend=__MOE_BACKEND__"
@@ -177,20 +171,42 @@ spec:
                 value: "127.0.0.1:6379"
               - name: TP_SIZE
                 value: "__TP_SIZE__"
+              # Loading 294GB across a TCP-backed TP group is slow, and the
+              # NVFP4 path additionally autotunes kernels on first boot. The
+              # default engine-ready timeout trips long before that finishes.
+              - name: VLLM_ENGINE_READY_TIMEOUT_S
+                value: "3600"
               - name: HOME
                 value: "/home/ray"
               - name: VLLM_CACHE_ROOT
                 value: "/models/.vllm-cache"
               - name: HF_HOME
                 value: "/models/.hf-home"
-              - name: VLLM_ENGINE_READY_TIMEOUT_S
-                value: "3600"
               - name: NCCL_IB_DISABLE
                 value: "__NCCL_IB_DISABLE__"
               - name: NCCL_SOCKET_IFNAME
                 value: "__NCCL_SOCKET_IFNAME__"
               - name: GLOO_SOCKET_IFNAME
                 value: "__NCCL_SOCKET_IFNAME__"
+              - name: NCCL_DEBUG
+                value: "WARN"
+              # THREAD BUDGET — do not drop these on a many-core node.
+              # These GPU nodes have 512 CPUs and the container is capped at
+              # ~4096 threads (OpenShift's podPidsLimit; note the container's
+              # own cgroup pids.max reads "max", so the ceiling is invisible
+              # from inside). Both OpenMP and Ray's gRPC pools size themselves
+              # from the host CPU count, and this container hosts the vLLM
+              # server plus __HEAD_GPUS__ TP rank actors — at 512 threads per
+              # torch process that is thousands of threads before any work
+              # happens. Exceeding the cap does not degrade gracefully; the
+              # Ray core worker aborts with
+              #   Unhandled exception ... thread: Resource temporarily
+              #   unavailable [system:11]
+              # which looks like a Ray bug rather than a limit.
+              - name: OMP_NUM_THREADS
+                value: "8"
+              - name: RAY_num_server_call_thread
+                value: "8"
               # PyTorch symmetric memory assumes every rank can reach the
               # others over NVLink/P2P, which is false for a TP group split
               # across two nodes. vLLM's SymmMemCommunicator checks device
@@ -202,25 +218,20 @@ spec:
               # Must match the worker container below.
               - name: VLLM_ALLREDUCE_USE_SYMM_MEM
                 value: "0"
-              # ---- RHOAI 2.x mTLS, by hand ----
-              # Copies of exactly what the CodeFlare webhook injects into
-              # container 0 (envVarList() in its raycluster_webhook.go). The
-              # webhook does not touch sidecars, so without these the driver
-              # fails to reach the GCS once mTLS is on — which it is by default.
-              - name: MY_POD_IP
-                valueFrom:
-                  fieldRef:
-                    fieldPath: status.podIP
-              - name: RAY_USE_TLS
-                value: "1"
-              - name: RAY_TLS_SERVER_CERT
-                value: "/home/ray/workspace/tls/server.crt"
-              - name: RAY_TLS_SERVER_KEY
-                value: "/home/ray/workspace/tls/server.key"
-              - name: RAY_TLS_CA_CERT
-                value: "/home/ray/workspace/tls/ca.crt"
+              # RAY_USE_TLS / RAY_TLS_* and the ca-vol + server-cert mounts are
+              # injected here by the CodeFlare webhook. Not repeated by hand:
+              # its validating webhook treats them as immutable and rejects a
+              # spec that already carries conflicting values.
             ports:
-              - { containerPort: 8000, name: http }
+              - { containerPort: 6379,  name: gcs }
+              - { containerPort: 8265,  name: dashboard }
+              - { containerPort: 10001, name: client }
+              - { containerPort: 8000,  name: http }
+            # Model load here is tens of minutes, not seconds. A startupProbe
+            # is the right tool: until it passes, kubelet suppresses both the
+            # readiness probe below AND the liveness probe KubeRay injects, so
+            # a slow load cannot be mistaken for a hung raylet and restarted.
+            # Once it passes, Ready on this pod means "serving".
             startupProbe:
               httpGet: { path: /health, port: 8000 }
               periodSeconds: 15
@@ -229,25 +240,28 @@ spec:
               httpGet: { path: /health, port: 8000 }
               periodSeconds: 10
               failureThreshold: 3
+            # No livenessProbe: KubeRay injects a raylet + GCS healthz one,
+            # which is the right liveness signal for this container now that
+            # readiness tracks vLLM instead.
             resources:
+              # The head's old two containers asked for 16+8 CPU and
+              # 128+32Gi / 256+64Gi; keep the pod's totals the same so this
+              # still schedules exactly where it used to.
               requests:
-                cpu: "8"
-                memory: 32Gi
+                cpu: "24"
+                memory: 160Gi
               limits:
-                memory: 64Gi
+                nvidia.com/gpu: "__HEAD_GPUS__"
+                memory: 320Gi
             volumeMounts:
               - { name: weights, mountPath: /models }
               - { name: ray-home, mountPath: /home/ray }
               - { name: shm, mountPath: /dev/shm }
               - { name: ray-tmp, mountPath: /tmp/ray }
-              # The matching halves of the env above. `server-cert` is the
-              # emptyDir the create-cert init container writes into, and
-              # `ca-vol` is the ca-secret-<cluster> Secret; the webhook adds
-              # both volumes at pod level, so mounting them here is safe even
-              # though they are not declared in this file. Nested under
-              # /home/ray on purpose — the deeper mount wins over ray-home.
-              - { name: ca-vol, mountPath: /home/ray/workspace/ca, readOnly: true }
-              - { name: server-cert, mountPath: /home/ray/workspace/tls }
+              # ca-vol and server-cert are appended here by the CodeFlare
+              # webhook along with the RAY_TLS_* env, since this is container
+              # 0. Not declared by hand: its validating webhook treats them as
+              # immutable and rejects a spec carrying conflicting values.
         volumes:
           - name: weights
             persistentVolumeClaim:
@@ -258,14 +272,9 @@ spec:
             emptyDir:
               medium: Memory
               sizeLimit: 64Gi
-          # Ray's session directory, shared between ray-head and the vllm
-          # driver. `ray start` writes /tmp/ray/session_*/node_ip_address.json
-          # and a driver attaching to a GCS on the same host reads it back
-          # from its own filesystem — so with a private /tmp the sidecar
-          # connects to the GCS and then dies with
-          #   ValueError: Can't find a `node_ip_address.json` file ...
-          #               A ray instance hasn't started.
-          # which reads like the head never came up, when in fact it did.
+          # Ray's session directory: logs, the session state and any object
+          # spill. On an emptyDir rather than the container's writable layer,
+          # which is backed by the node's root filesystem and much smaller.
           - name: ray-tmp
             emptyDir: {}
           # ca-vol / server-cert / proxy-tls-secret are appended by the
@@ -311,9 +320,14 @@ spec:
                   value: "__NCCL_SOCKET_IFNAME__"
                 - name: NCCL_DEBUG
                   value: "WARN"
-                # Must match the vllm container — the ranks on this node take
-                # part in the same rendezvous, so leaving it enabled here
-                # alone would hang just the same.
+                # Same reasoning as the head — see its comments. The ranks on
+                # this node share the same thread ceiling and take part in the
+                # same rendezvous, so leaving either setting off here alone
+                # reproduces the failure exactly.
+                - name: OMP_NUM_THREADS
+                  value: "8"
+                - name: RAY_num_server_call_thread
+                  value: "8"
                 - name: VLLM_ALLREDUCE_USE_SYMM_MEM
                   value: "0"
               resources:

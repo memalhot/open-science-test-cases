@@ -284,7 +284,7 @@ wait_for_serving() {
 
   info "Waiting for vLLM to load the model and report healthy..."
   echo "      this is the slow part: 294GB of weights over a TCP-backed TP group"
-  echo "      follow it:  oc logs -f \$(oc get pod -l ray.io/cluster=$CLUSTER_NAME,ray.io/node-type=head -n $NAMESPACE -o name) -c vllm -n $NAMESPACE"
+  echo "      follow it:  oc logs -f \$(oc get pod -l ray.io/cluster=$CLUSTER_NAME,ray.io/node-type=head -n $NAMESPACE -o name) -c ray-head -n $NAMESPACE"
   oc wait --for=condition=Ready pod \
     -l "ray.io/cluster=${CLUSTER_NAME},ray.io/node-type=head" -n "$NAMESPACE" --timeout=5400s \
     || die "head pod never became Ready — inspect the vllm container logs"
