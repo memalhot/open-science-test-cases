@@ -17,8 +17,36 @@ KEEP_VM="${KEEP_VM:-0}"   # set to 1 to leave the VM running for debugging
 GUEST_USER="${GUEST_USER:-cirros}"
 WORKDIR=""
 
-echo "=== 0. Setting active namespace to ${NAMESPACE} ==="
-oc project "${NAMESPACE}"
+echo "=== 0. Preflight ==="
+
+# Every resource below is addressed with an explicit -n, so there is no need to
+# change the user's active project — doing so would leave their shell pointed
+# somewhere else after the test exits.
+for bin in oc virtctl ssh-keygen; do
+  if ! command -v "${bin}" >/dev/null 2>&1; then
+    echo "❌ Required binary '${bin}' not found in PATH."
+    if [ "${bin}" = "virtctl" ]; then
+      echo "   Get the download URL with:"
+      echo "   oc get consoleclidownload virtctl-clidownloads-kubevirt-hyperconverged -o jsonpath='{.spec.links[*].href}'"
+    fi
+    exit 1
+  fi
+done
+
+oc get namespace "${NAMESPACE}" >/dev/null 2>&1 || {
+  echo "❌ Namespace ${NAMESPACE} not found."
+  exit 1
+}
+echo "namespace ${NAMESPACE}: present"
+
+# Fail before creating anything if a previous run left a VM behind. Silently
+# reusing it would report on a guest this run never configured.
+if oc get vm "${VM_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1; then
+  echo "❌ Leftover vm/${VM_NAME} from a previous run exists in ${NAMESPACE}. Remove it first:"
+  echo "   oc delete vm ${VM_NAME} -n ${NAMESPACE} --ignore-not-found"
+  exit 1
+fi
+echo "no leftover objects from a previous run"
 
 cleanup() {
   echo ""
