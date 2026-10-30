@@ -22,7 +22,7 @@ set -euo pipefail
 #           (passthrough plumbing works: vfio, IOMMU, permittedHostDevices)
 #   tier 2  the in-guest NVIDIA driver binds it and nvidia-smi reports the card
 #           (the device is functional, not just visible)
-#   tier 3  a CUDA kernel runs on it and returns correct results
+#   tier 3  a CUDA kernel runs on each GPU and returns correct results
 #           (the GPU does real work, and we get a host-to-device bandwidth
 #           number across the passthrough path)
 #
@@ -73,6 +73,22 @@ BOOT_MODE="${BOOT_MODE:-}"
 # needs all guest pages present, so none of it is overcommittable.
 MEMORY="${MEMORY:-16Gi}"
 CPU_CORES="${CPU_CORES:-8}"
+# 1 gives each vCPU a host CPU of its own (KubeVirt dedicatedCpuPlacement). The
+# node needs the kubelet's static CPU manager, or the VM never schedules.
+DEDICATED_CPUS="${DEDICATED_CPUS:-0}"
+# Threads per core the guest is told about. With dedicated CPUs on a host
+# with SMT, KubeVirt pins vCPU pairs to one core's two threads; 2 tells the
+# guest so, and its scheduler stops putting two busy threads on one core.
+CPU_THREADS="${CPU_THREADS:-1}"
+CPU_PLACEMENT=""
+if [ "${CPU_THREADS}" != "1" ]; then
+  CPU_PLACEMENT="
+          threads: ${CPU_THREADS}"
+fi
+if [ "${DEDICATED_CPUS}" = "1" ]; then
+  CPU_PLACEMENT="${CPU_PLACEMENT}
+          dedicatedCpuPlacement: true"
+fi
 
 MAX_TIER="${MAX_TIER:-3}"      # stop after this tier; 2 skips the CUDA toolkit
 DV_TIMEOUT="${DV_TIMEOUT:-900}"
@@ -85,6 +101,15 @@ SSH_TIMEOUT="${SSH_TIMEOUT:-45}"
 # Driver and toolkit installs are long and talk to the network.
 INSTALL_TIMEOUT="${INSTALL_TIMEOUT:-1500}"
 KEEP_VM="${KEEP_VM:-0}"
+# 1 keeps every GPU driver (nvidia*, nouveau) from loading in the guest,
+# from its first boot: test-gpu-memclear.sh reads a fresh VM's GPU memory
+# before anything has touched it. Use with MAX_TIER=1.
+NO_GPU_DRIVER="${NO_GPU_DRIVER:-0}"
+# Pin the VM to one node, e.g. to test a second passthrough node, or to
+# measure bandwidth on the node a container figure came from. Empty: any.
+NODE="${NODE:-}"
+# Tier 3 measures host-to-device bandwidth this many times (one build).
+BW_RUNS="${BW_RUNS:-1}"
 
 WORKDIR=""
 PASSED=0
@@ -354,6 +379,15 @@ users:
       - ${SSH_PUBKEY}
 ssh_pwauth: false
 EOF
+if [ "${NO_GPU_DRIVER}" = "1" ]; then
+  # bootcmd runs early on every boot. It may run after udev has loaded a
+  # driver on the first boot, so the memclear test checks the guest's kernel
+  # log and the GPUs' bound drivers before it trusts a scan.
+  cat >> "${WORKDIR}/user-data" <<'EOF'
+bootcmd:
+  - printf 'blacklist %s\ninstall %s /bin/false\n' nvidia nvidia nvidia_uvm nvidia_uvm nvidia_drm nvidia_drm nvidia_modeset nvidia_modeset nouveau nouveau > /etc/modprobe.d/no-gpu-driver.conf
+EOF
+fi
 
 # The driver install is deliberately NOT in cloud-init: inline userdata is
 # capped at 2048 bytes and these namespaces cannot create secrets, so anything
@@ -390,6 +424,7 @@ spec:
         kubevirt.io/vm: ${VM_NAME}
     spec:
       evictionStrategy: None
+$([ -n "${NODE}" ] && printf '      nodeSelector:\n        kubernetes.io/hostname: %s\n' "${NODE}")
       tolerations:
       - key: nvidia.com/gpu.product
         operator: Exists
@@ -403,7 +438,7 @@ spec:
         machine:
           type: q35
         cpu:
-          cores: ${CPU_CORES}
+          cores: ${CPU_CORES}${CPU_PLACEMENT}
         memory:
           guest: ${MEMORY}
         devices:
@@ -603,7 +638,17 @@ sudo modprobe nvidia || true"
   fi
   tail -20 "${SSH_LOG}" 2>/dev/null | sed 's/^/    /' || true
 
-  if guest_ssh 'nvidia-smi --query-gpu=name,memory.total,driver_version,pci.bus_id --format=csv,noheader 2>&1' 120; then
+  # With several GPUs the driver can still be initialising them when modprobe
+  # returns, and nvidia-smi then fails to reach it (4 GPUs, jetty, 2026-10-29).
+  SMI_OK=0
+  for attempt in $(seq 1 20); do
+    if guest_ssh 'nvidia-smi --query-gpu=name,memory.total,driver_version,pci.bus_id --format=csv,noheader 2>&1' 120; then
+      SMI_OK=1; break
+    fi
+    echo "  nvidia-smi not ready yet (attempt ${attempt}/20)"
+    sleep 15
+  done
+  if [ "${SMI_OK}" = 1 ]; then
     echo "${SSH_OUT}" | sed 's/^/  /'
     if printf '%s' "${SSH_OUT}" | grep -qiE 'NVIDIA|H100|A100|L40'; then
       pass "Tier 2 — nvidia-smi reports the card from inside the guest"
@@ -643,30 +688,21 @@ __global__ void saxpy(size_t n, float a, const float *x, float *y) {
   if (i < n) y[i] = a * x[i] + y[i];
 }
 
-int main(void) {
-  int count = 0;
-  if (cudaGetDeviceCount(&count) != cudaSuccess || count < 1) {
-    printf("CUDA_FAIL no devices\n");
-    return 1;
-  }
-  cudaDeviceProp p;
-  if (cudaGetDeviceProperties(&p, 0) != cudaSuccess) {
-    printf("CUDA_FAIL properties\n");
-    return 1;
-  }
-  printf("CUDA_DEVICES %d\n", count);
-  printf("CUDA_DEVICE %s sm_%d%d %.0fGiB\n", p.name, p.major, p.minor,
-         p.totalGlobalMem / 1073741824.0);
-
-  const size_t n = 1u << 26;            /* 64 Mi floats = 256 MiB per buffer */
+/* One GPU: copy in (timed), saxpy, copy back, check. 0 on success. */
+static int check(int d, size_t n, float *hx, float *hy) {
   const size_t bytes = n * sizeof(float);
-  float *hx = (float *)malloc(bytes), *hy = (float *)malloc(bytes);
-  if (!hx || !hy) { printf("CUDA_FAIL host alloc\n"); return 1; }
+  cudaDeviceProp p;
+  if (cudaSetDevice(d) != cudaSuccess || cudaGetDeviceProperties(&p, d) != cudaSuccess) {
+    printf("CUDA_FAIL gpu%d properties\n", d);
+    return 1;
+  }
+  printf("CUDA_DEVICE gpu%d %s sm_%d%d %.0fGiB\n", d, p.name, p.major, p.minor,
+         p.totalGlobalMem / 1073741824.0);
   for (size_t i = 0; i < n; i++) { hx[i] = 1.0f; hy[i] = 2.0f; }
 
   float *dx = NULL, *dy = NULL;
   if (cudaMalloc(&dx, bytes) != cudaSuccess || cudaMalloc(&dy, bytes) != cudaSuccess) {
-    printf("CUDA_FAIL device alloc\n");
+    printf("CUDA_FAIL gpu%d device alloc\n", d);
     return 1;
   }
 
@@ -679,20 +715,41 @@ int main(void) {
   cudaEventSynchronize(e);
   float ms = 0.0f;
   cudaEventElapsedTime(&ms, s, e);
-  printf("CUDA_H2D %.2f GB/s\n", (2.0 * bytes / 1e9) / (ms / 1000.0));
+  printf("CUDA_H2D %.2f GB/s gpu%d\n", (2.0 * bytes / 1e9) / (ms / 1000.0), d);
 
   saxpy<<<(unsigned)((n + 255) / 256), 256>>>(n, 3.0f, dx, dy);
   if (cudaDeviceSynchronize() != cudaSuccess) {
-    printf("CUDA_FAIL kernel %s\n", cudaGetErrorString(cudaGetLastError()));
+    printf("CUDA_FAIL gpu%d kernel %s\n", d, cudaGetErrorString(cudaGetLastError()));
     return 1;
   }
   cudaMemcpy(hy, dy, bytes, cudaMemcpyDeviceToHost);
+  cudaFree(dx); cudaFree(dy);
+  cudaEventDestroy(s); cudaEventDestroy(e);
 
   size_t bad = 0;
   for (size_t i = 0; i < n; i++) if (hy[i] != 5.0f) bad++;
-  if (bad == 0) printf("CUDA_COMPUTE_OK %zu elements\n", n);
-  else          printf("CUDA_FAIL %zu wrong elements\n", bad);
-  return bad == 0 ? 0 : 1;
+  if (bad) printf("CUDA_FAIL gpu%d %zu wrong elements\n", d, bad);
+  return bad != 0;
+}
+
+/* Every GPU the guest has, not just the first: a multi-GPU VM is only shown
+   working if CUDA runs on each of its cards. */
+int main(void) {
+  int count = 0;
+  if (cudaGetDeviceCount(&count) != cudaSuccess || count < 1) {
+    printf("CUDA_FAIL no devices\n");
+    return 1;
+  }
+  printf("CUDA_DEVICES %d\n", count);
+
+  const size_t n = 1u << 26;            /* 64 Mi floats = 256 MiB per buffer */
+  float *hx = (float *)malloc(n * sizeof(float)), *hy = (float *)malloc(n * sizeof(float));
+  if (!hx || !hy) { printf("CUDA_FAIL host alloc\n"); return 1; }
+
+  int failed = 0;
+  for (int d = 0; d < count; d++) failed += check(d, n, hx, hy);
+  if (failed == 0) printf("CUDA_COMPUTE_OK %zu elements on %d GPU(s)\n", n, count);
+  return failed == 0 ? 0 : 1;
 }
 CUEOF
 
@@ -717,9 +774,12 @@ CUEOF
   if guest_ssh 'cd /tmp && nvcc -O2 -o gpucheck gpucheck.cu 2>&1 && ./gpucheck' 300; then
     echo "${SSH_OUT}" | sed 's/^/  /'
     if printf '%s' "${SSH_OUT}" | grep -q CUDA_COMPUTE_OK; then
-      pass "Tier 3 — a CUDA kernel ran on the passed-through GPU and returned correct results"
-      H2D="$(printf '%s' "${SSH_OUT}" | sed -n 's/^CUDA_H2D //p')"
+      pass "Tier 3 — a CUDA kernel ran on every passed-through GPU and returned correct results"
+      H2D="$(printf '%s' "${SSH_OUT}" | sed -n 's/^CUDA_H2D //p' | paste -sd ';' - | sed 's/;/; /g')"
       [ -n "${H2D}" ] && echo "     host-to-device bandwidth across the passthrough path: ${H2D}"
+      if [ "${BW_RUNS}" -gt 1 ] && guest_ssh "cd /tmp && for i in \$(seq 2 ${BW_RUNS}); do ./gpucheck | grep CUDA_H2D; done" 300; then
+        echo "     runs 2-${BW_RUNS}: $(printf '%s' "${SSH_OUT}" | sed -n 's/^CUDA_H2D //p' | tr '\n' ' ')"
+      fi
     else
       fail "Tier 3 — the CUDA program ran but did not report CUDA_COMPUTE_OK"
     fi

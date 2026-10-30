@@ -2,7 +2,7 @@
 
 What has been tested on OpenShift Virtualization (CNV), and what passed.
 
-All runs are against `oac-dev-workload0`, namespace `mm-test` (the networking suite defaults to `vm-test`) — except the GPU suite in [`vm-testing/gpu/`](vm-testing/gpu/), which was run on `jetty`, the compliant hub, because that is where the H100 nodes are. Those results are marked as such in the table below. Guest images are CirrOS (`quay.io/kubevirt/cirros-container-disk-demo`) for networking and Fedora Linux 41 Cloud Edition (`quay.io/containerdisks/fedora:41`) for everything that needs a real disk. VM disks land on `pure-fb-nfsv4` (provisioner `pxd.portworx.com`), which is what CDI picks on its own.
+All runs are against `oac-dev-workload0`, namespace `mm-test` (the networking suite defaults to `vm-test`) — except the GPU suite in [`vm-testing/gpu/`](vm-testing/gpu/), which was run on `jetty`, a FIPS-enabled spoke of `oac-dev-infra`, because that is where the H100 nodes are. Those results are marked as such in the table below. Guest images are CirrOS (`quay.io/kubevirt/cirros-container-disk-demo`) for networking and Fedora Linux 41 Cloud Edition (`quay.io/containerdisks/fedora:41`) for everything that needs a real disk. VM disks land on `pure-fb-nfsv4` (provisioner `pxd.portworx.com`), which is what CDI picks on its own.
 
 The test scripts run entirely as the logged-in user, so what they prove is what a real project user can actually do. There are three deliberate exceptions, all documented where they occur:
 
