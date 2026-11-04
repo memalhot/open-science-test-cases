@@ -374,11 +374,16 @@ EOF
 echo ""
 echo "=== 2. Sweeping guest size and vCPU count ==="
 
+# The quantity goes into a VM name, and a name is an RFC 1123 subdomain, so the
+# capital in 8Gi is rejected at admission. Lowercased for the label only; the
+# quantity itself is passed through untouched because KubeVirt wants the Gi.
+mem_label() { printf 'mem-%s' "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"; }
+
 # One VM at a time: the sweep never holds more than a single guest, so it can
 # run on a busy cluster without becoming the capacity problem it is measuring.
 for mem in ${MEMORY_SWEEP}; do
-  measure_one "mem-${mem}" "${mem}" "1" || true
-  [ "${KEEP_VM}" = "1" ] || oc delete vm "${VM_PREFIX}-mem-${mem}" -n "${NAMESPACE}" \
+  measure_one "$(mem_label "${mem}")" "${mem}" "1" || true
+  [ "${KEEP_VM}" = "1" ] || oc delete vm "${VM_PREFIX}-$(mem_label "${mem}")" -n "${NAMESPACE}" \
     --ignore-not-found --timeout=120s >/dev/null 2>&1 || true
 done
 
@@ -445,8 +450,8 @@ get_overhead() { # get_overhead <label>
 
 FIRST_MEM="$(echo "${MEMORY_SWEEP}" | awk '{print $1}')"
 LAST_MEM="$(echo "${MEMORY_SWEEP}" | awk '{print $NF}')"
-OH_SMALL="$(get_overhead "mem-${FIRST_MEM}")"
-OH_LARGE="$(get_overhead "mem-${LAST_MEM}")"
+OH_SMALL="$(get_overhead "$(mem_label "${FIRST_MEM}")")"
+OH_LARGE="$(get_overhead "$(mem_label "${LAST_MEM}")")"
 if [ -n "${OH_SMALL}" ] && [ -n "${OH_LARGE}" ]; then
   if [ "${OH_LARGE}" -ne "${OH_SMALL}" ]; then
     pass "Overhead at ${LAST_MEM} differs from ${FIRST_MEM} — it has a term that scales with guest size"
