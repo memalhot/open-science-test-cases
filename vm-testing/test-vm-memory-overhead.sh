@@ -63,12 +63,25 @@ cleanup() {
 }
 
 # Portable timeout: macOS has no coreutils `timeout` by default.
+#
+# The command is started under job control so that it leads its own process
+# group, and the watcher signals that group rather than the single pid. The
+# command being timed here is `virtctl ssh`, which spawns `ssh`, which spawns a
+# second `virtctl port-forward` as its ProxyCommand. Killing only the direct
+# child leaves both grandchildren running and reparented to init, and this
+# function is called up to POLL_ATTEMPTS times per VM, so on a cluster where the
+# SSH cannot succeed the strays accumulate for the length of the run.
 run_with_timeout() {
   local secs="$1"; shift
   local rc=0 pid watcher
+  set -m                    # own process group for the job below
   "$@" & pid=$!
-  ( sleep "${secs}"; kill -9 "${pid}" 2>/dev/null ) & watcher=$!
+  set +m                    # back off again so the watcher stays in ours
+  ( sleep "${secs}"; kill -9 -- "-${pid}" 2>/dev/null ) & watcher=$!
   wait "${pid}" 2>/dev/null || rc=$?
+  # Belt and braces: if the command exited on its own the group is already
+  # empty, but a ProxyCommand that outlived its parent would still be in it.
+  kill -9 -- "-${pid}" 2>/dev/null || true
   kill "${watcher}" 2>/dev/null || true
   wait "${watcher}" 2>/dev/null || true
   return "${rc}"
