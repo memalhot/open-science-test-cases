@@ -63,12 +63,25 @@ cleanup() {
 }
 
 # Portable timeout: macOS has no coreutils `timeout` by default.
+#
+# The command is started under job control so that it leads its own process
+# group, and the watcher signals that group rather than the single pid. The
+# command being timed here is `virtctl ssh`, which spawns `ssh`, which spawns a
+# second `virtctl port-forward` as its ProxyCommand. Killing only the direct
+# child leaves both grandchildren running and reparented to init, and this
+# function is called up to POLL_ATTEMPTS times per VM, so on a cluster where the
+# SSH cannot succeed the strays accumulate for the length of the run.
 run_with_timeout() {
   local secs="$1"; shift
   local rc=0 pid watcher
+  set -m                    # own process group for the job below
   "$@" & pid=$!
-  ( sleep "${secs}"; kill -9 "${pid}" 2>/dev/null ) & watcher=$!
+  set +m                    # back off again so the watcher stays in ours
+  ( sleep "${secs}"; kill -9 -- "-${pid}" 2>/dev/null ) & watcher=$!
   wait "${pid}" 2>/dev/null || rc=$?
+  # Belt and braces: if the command exited on its own the group is already
+  # empty, but a ProxyCommand that outlived its parent would still be in it.
+  kill -9 -- "-${pid}" 2>/dev/null || true
   kill "${watcher}" 2>/dev/null || true
   wait "${watcher}" 2>/dev/null || true
   return "${rc}"
@@ -374,11 +387,16 @@ EOF
 echo ""
 echo "=== 2. Sweeping guest size and vCPU count ==="
 
+# The quantity goes into a VM name, and a name is an RFC 1123 subdomain, so the
+# capital in 8Gi is rejected at admission. Lowercased for the label only; the
+# quantity itself is passed through untouched because KubeVirt wants the Gi.
+mem_label() { printf 'mem-%s' "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"; }
+
 # One VM at a time: the sweep never holds more than a single guest, so it can
 # run on a busy cluster without becoming the capacity problem it is measuring.
 for mem in ${MEMORY_SWEEP}; do
-  measure_one "mem-${mem}" "${mem}" "1" || true
-  [ "${KEEP_VM}" = "1" ] || oc delete vm "${VM_PREFIX}-mem-${mem}" -n "${NAMESPACE}" \
+  measure_one "$(mem_label "${mem}")" "${mem}" "1" || true
+  [ "${KEEP_VM}" = "1" ] || oc delete vm "${VM_PREFIX}-$(mem_label "${mem}")" -n "${NAMESPACE}" \
     --ignore-not-found --timeout=120s >/dev/null 2>&1 || true
 done
 
@@ -445,8 +463,8 @@ get_overhead() { # get_overhead <label>
 
 FIRST_MEM="$(echo "${MEMORY_SWEEP}" | awk '{print $1}')"
 LAST_MEM="$(echo "${MEMORY_SWEEP}" | awk '{print $NF}')"
-OH_SMALL="$(get_overhead "mem-${FIRST_MEM}")"
-OH_LARGE="$(get_overhead "mem-${LAST_MEM}")"
+OH_SMALL="$(get_overhead "$(mem_label "${FIRST_MEM}")")"
+OH_LARGE="$(get_overhead "$(mem_label "${LAST_MEM}")")"
 if [ -n "${OH_SMALL}" ] && [ -n "${OH_LARGE}" ]; then
   if [ "${OH_LARGE}" -ne "${OH_SMALL}" ]; then
     pass "Overhead at ${LAST_MEM} differs from ${FIRST_MEM} — it has a term that scales with guest size"
